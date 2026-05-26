@@ -40,6 +40,90 @@ WHERE age_code IS NULL;
 
 ---
 
+## Prerequisite: Data Quality Assessment by Year
+
+Before deciding which date range to use for research and curve fitting, characterize data quality across the full date range in the database.
+
+```sql
+-- 1. What years are in the database and how much data exists?
+SELECT EXTRACT(YEAR FROM date) as year,
+       COUNT(*) as n_races,
+       COUNT(DISTINCT track) as n_tracks,
+       AVG(number_of_runners) as avg_field
+FROM handycapper.races
+GROUP BY 1 ORDER BY 1;
+
+-- 2. Individual fractional availability by year
+-- (this is what RKM needs — without indiv_fractionals, no curves)
+SELECT EXTRACT(YEAR FROM r.date) as year,
+       COUNT(DISTINCT r.id) as races_with_data,
+       COUNT(DISTINCT s.id) as starters_with_data,
+       AVG(ct.n_points) as avg_points_per_starter
+FROM handycapper.races r
+JOIN handycapper.starters s ON s.race_id = r.id
+JOIN LATERAL (
+    SELECT COUNT(*) as n_points 
+    FROM handycapper.indiv_fractionals inf 
+    WHERE inf.starter_id = s.id AND inf.millis IS NOT NULL
+) ct ON true
+WHERE ct.n_points > 0
+GROUP BY 1 ORDER BY 1;
+
+-- 3. Timing precision by year — are fractionals rounded?
+-- Look at the last digit distribution of millis values
+SELECT EXTRACT(YEAR FROM r.date) as year,
+       inf.millis % 100 as last_two_digits,
+       COUNT(*) as n
+FROM handycapper.indiv_fractionals inf
+JOIN handycapper.starters s ON s.id = inf.starter_id
+JOIN handycapper.races r ON r.id = s.race_id
+WHERE inf.millis IS NOT NULL
+GROUP BY 1, 2
+ORDER BY 1, 2;
+
+-- 4. Simplified: what % of fractionals have millis ending in 00 or 50 (200ms/100ms rounding)?
+SELECT EXTRACT(YEAR FROM r.date) as year,
+       COUNT(*) as total,
+       AVG(CASE WHEN inf.millis % 200 = 0 THEN 1.0 ELSE 0.0 END) as pct_200ms_rounded,
+       AVG(CASE WHEN inf.millis % 100 = 0 THEN 1.0 ELSE 0.0 END) as pct_100ms_rounded,
+       AVG(CASE WHEN inf.millis % 10 = 0 THEN 1.0 ELSE 0.0 END) as pct_10ms_rounded
+FROM handycapper.indiv_fractionals inf
+JOIN handycapper.starters s ON s.id = inf.starter_id
+JOIN handycapper.races r ON r.id = s.race_id
+WHERE inf.millis IS NOT NULL
+GROUP BY 1 ORDER BY 1;
+
+-- 5. Points of call availability — did older charts have fewer call points?
+SELECT EXTRACT(YEAR FROM r.date) as year,
+       AVG(poc_count.n) as avg_points_of_call_per_starter
+FROM handycapper.races r
+JOIN handycapper.starters s ON s.race_id = r.id
+JOIN LATERAL (
+    SELECT COUNT(*) as n FROM handycapper.points_of_call poc WHERE poc.starter_id = s.id
+) poc_count ON true
+GROUP BY 1 ORDER BY 1;
+
+-- 6. Exotic/wagering data availability by year
+SELECT EXTRACT(YEAR FROM r.date) as year,
+       COUNT(DISTINCT r.id) as n_races,
+       COUNT(DISTINCT CASE WHEN e.bet_type = 'EXACTA' THEN r.id END) as races_w_exacta,
+       COUNT(DISTINCT CASE WHEN e.bet_type = 'TRIFECTA' THEN r.id END) as races_w_tri,
+       COUNT(DISTINCT CASE WHEN e.bet_type LIKE 'PICK%' THEN r.id END) as races_w_pick
+FROM handycapper.races r
+LEFT JOIN handycapper.exotics e ON e.race_id = r.id
+GROUP BY 1 ORDER BY 1;
+```
+
+**What we're looking for:**
+- A year where timing precision jumps (e.g., from 200ms rounding to 10ms precision)
+- A year where points-of-call coverage increases (more call points = more velocity observations per race)
+- Whether very early years (pre-1997?) have fundamentally different data quality that would contaminate curve fitting
+- Whether the rkm-v3 spec's claim of "200ms rounding pre-2000" is actually true
+
+**Outcome:** This determines the date floor for all research queries and whether a full recompute of RKM curves across all years is warranted vs keeping the current 1997-2016 window (or expanding it).
+
+---
+
 ## 1. Identify the Canonical Race
 
 **Goal:** Empirically determine which race conditions represent the true "center of mass" of American racing — the single anchor point (100) for the rating scale.
