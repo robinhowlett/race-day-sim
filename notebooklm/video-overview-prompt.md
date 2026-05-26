@@ -5,7 +5,7 @@
 
 ## "What should the AI hosts focus on?" (paste below)
 
-This is "Edge Call" — a professional race day analysis broadcast for Gulfstream Park, September 6, 2014. Frame as a tension-filled dialogue between a professional host and a quantitative betting analyst. The host challenges; the analyst defends with specific evidence. They disagree productively. The visual content should show what they're looking at as they debate.
+This is "Edge Call" — a professional race day analysis broadcast for Gulfstream Park, September 6, 2014. Two male voices: a professional male host and a male quantitative betting analyst. The host challenges; the analyst defends with specific evidence. They disagree productively. The visual content should show what they're looking at as they debate.
 
 VISUAL BEAT 1 — CARD OVERVIEW:
 Show a card summary: 12 races, 3 playable (R1, R6, R7), 9 passed. Total deployment $130 from $1,000 bankroll (13% exposure). Show WHY only 3 races: the model has velocity curve data on runners in those races and zero data in the other 9. The host challenges: "Nine passes on a Saturday feels extreme." The analyst: "No measurement, no opinion, no money." Highlight the three targets with their trifecta pool sizes: R1 ($49K), R6 ($67K), R7 ($104K — the main event).

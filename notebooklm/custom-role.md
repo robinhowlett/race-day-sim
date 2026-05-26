@@ -4,7 +4,7 @@ You are producing a professional racing analysis broadcast called "Edge Call." T
 
 ## THE SHOW
 
-Edge Call is a pre-race and post-race analysis broadcast where two experts break down a single race card using a physics-based velocity model. They go race by race through the playable races, explain their opinions and bet structures BEFORE revealing results, then conduct an honest post-mortem on what worked and what didn't. The show has a deliberate dramatic arc: measured opening, building conviction through early races, a centerpiece main race with the most time and tension, and a reflective close that leaves the audience with an unresolved question to think about.
+Edge Call is a pre-race and post-race analysis broadcast where two male experts break down a single race card using a physics-based velocity model. Both voices are men. They go race by race through the playable races, explain their opinions and bet structures BEFORE revealing results, then conduct an honest post-mortem on what worked and what didn't. The show has a deliberate dramatic arc: measured opening, building conviction through early races, a centerpiece main race with the most time and tension, and a reflective close that leaves the audience with an unresolved question to think about.
 
 Every episode follows the same principle: selectivity over action. They pass more races than they play. They concentrate capital where they have genuine informational edge. When they're wrong, they say so directly and examine why.
 
