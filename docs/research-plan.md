@@ -4,6 +4,42 @@ Database-dependent investigations required before the rating and output systems 
 
 ---
 
+## Prerequisite: Backfill Unmapped Columns
+
+Three columns in the `races` table were never populated by pdf-importer (now fixed for new imports — see pdf-importer commit `5a29666`). Existing data needs a one-time backfill before research queries that depend on them:
+
+```sql
+-- off_turf: race was moved from turf to dirt due to weather
+UPDATE handycapper.races 
+SET off_turf = (scheduled_surface IS NOT NULL AND surface != scheduled_surface)
+WHERE off_turf IS NULL;
+
+-- female_only: fillies/mares only race (sexes bitmask: 8=fillies, 16=mares, 24=f&m)
+UPDATE handycapper.races 
+SET female_only = (sexes IN (8, 16, 24))
+WHERE female_only IS NULL AND sexes IS NOT NULL;
+
+-- age_code: human-readable age restriction
+UPDATE handycapper.races 
+SET age_code = CASE 
+    WHEN min_age = 2 AND max_age = 2 THEN '2yo'
+    WHEN min_age = 3 AND max_age = 3 THEN '3yo'
+    WHEN min_age = 3 AND max_age IS NULL THEN '3yo+'
+    WHEN min_age = 4 AND max_age IS NULL THEN '4yo+'
+    WHEN min_age IS NOT NULL AND max_age IS NOT NULL THEN min_age || '-' || max_age || 'yo'
+    WHEN min_age IS NOT NULL THEN min_age || 'yo+'
+    ELSE NULL
+END
+WHERE age_code IS NULL;
+```
+
+**Run this BEFORE any research queries below.** Items that depend on these columns:
+- `off_turf` → Item 9 (off-turf reliability), Item 11 (surface specialization)
+- `female_only` → Item 1 (canonical race identification), Item 12 (point-in-time stats by sex)
+- `age_code` → Item 1 (canonical race), Item 12 (2yo/3yo stats)
+
+---
+
 ## 1. Identify the Canonical Race
 
 **Goal:** Empirically determine which race conditions represent the true "center of mass" of American racing — the single anchor point (100) for the rating scale.
