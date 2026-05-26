@@ -7,18 +7,20 @@ Create display ratings that translate raw velocity curve parameters (adj_v0, dec
 ## Display Format
 
 ```
-Horse         Rating    Stamina  Form    Value   Confidence
-Willy Pay     112 (±3)  34       +4      +6      HIGH (28 races)
-Tinitus       105 (±3)  78       -3      -2      HIGH (24 races)
-Gamblin Fever 106 (±8)  76       +11     +14     MODERATE (8 races)
-Winner Jak     98 (±11) 82       +5      +8      LOW (5 races)
+Horse         Rating    Stamina  Form    Value       Confidence
+Willy Pay     112 (±3)  34       +4      +40% (±15) HIGH (28 races)
+Tinitus       105 (±3)  78       -3      -10% (±12) HIGH (24 races)
+Gamblin Fever 106 (±8)  76       +11     +65% (±30) MODERATE (8 races)
+Winner Jak     98 (±11) 82       +5      +50% (±45) LOW (5 races)
 ```
 
 - **Rating** = projected competitive ability at today's distance (higher = faster projected time)
 - **Stamina** = standalone decay measure (higher = holds speed better)
 - **Form** = how many rating points above/below career baseline (from v0_trend)
-- **Value** = how many rating points above/below what the market implies from odds
-- **Confidence** = ± range from sample size / residual std
+- **Value** = estimated overlay percentage (what the model says this horse SHOULD pay vs what the market implies). Includes its own confidence range.
+- **Confidence** = ± range on the Rating from sample size / residual std
+
+Value interpretation: "+40% (±15)" means "the model estimates you'd get 40% more than fair value betting this horse, and we're fairly confident the overlay is real (even at the low end, +25% overlay)." A "+50% (±45)" means "potentially huge edge but uncertain — at the low end it could be only +5%.""
 
 ## Three Scales
 
@@ -26,27 +28,44 @@ Winner Jak     98 (±11) 82       +5      +8      LOW (5 races)
 
 Combines v0 + decay into "how fast would this horse complete today's distance?"
 
-**Anchor: 100 = average allowance winner's projected time.**
+**Anchor: 100 = the canonical race winner.**
 
-But the anchor must be SEGMENTED because:
-- A 2yo's 58.0 adj_v0 doesn't mean the same as a 4yo's 58.0 (maturation)
-- Fillies run slower than colts at the same class (sex allowance)
-- Surface physics differ (dirt sprint v0 clusters around 64, turf route around 56)
+The canonical race is the single most representative performance benchmark in American racing — NOT an average across all conditions, but a specific, defined context:
 
-**Segmentation needed:**
+**The canonical race:**
+- 4yo+ open (males and females eligible, but predominantly male fields)
+- Claiming level ($20K-$40K purse range)
+- Dirt surface, fast track condition
+- Route distance (8-9 furlongs)
+- Mid-tier track (not a premier meet, not a bush track — the middle 60% of tracks by handle)
+- Field size 8-10 starters
+- Non-state-bred, non-restricted
+- Obvious outliers excluded (no 50+ length losers)
 
-| Segment | Anchor definition |
-|---|---|
-| Dirt Sprint, Male 4yo+ | 100 = avg allowance winner projected time |
-| Dirt Sprint, Female 4yo+ | 100 = avg allowance winner projected time |
-| Dirt Sprint, 3yo | 100 = avg allowance winner projected time |
-| Dirt Sprint, 2yo | 100 = avg MSW winner projected time (no allowance for 2yos) |
-| Dirt Route, Male 4yo+ | 100 = avg allowance winner projected time |
-| ... (same for Turf, Synthetic) | ... |
+This is the most common race run in America. The shipping-horse network already normalizes across tracks, so "mid-tier track" is handled by adj_v0. The remaining dimensions (age, sex, class, conditions) define what 100 means.
 
-Each segment gets its own anchor time and ms-per-point scaling. A rating of 110 in "Dirt Route Male 4yo+" means the same relative thing as 110 in "Turf Sprint Female 3yo" — 10 points above average winner for that category.
+**Everything is measured relative to this canonical race on its surface:**
 
-**Cross-segment comparison:** A 115 dirt route male may or may not beat a 115 turf sprint female in an actual race — the segments are independent scales. BUT within a single race (where all horses are running the same distance/surface), the ratings are directly comparable.
+- A 2yo MSW winner might rate 82 — expected, they're immature, not "bad"
+- A filly in open company at 93 — giving real lengths to males, as the weight allowance (3-5 lbs) acknowledges
+- A Grade 1 stakes winner at 125 — clearly 25 points above the journeyman level
+- A champion at 140+ — generational talent
+
+**Surface-specific canonical races:**
+
+The physics differ so much between dirt/turf/synthetic that each surface needs its own 100-point anchor:
+- Dirt route: canonical as described above
+- Dirt sprint: same conditions but ≤6.5f
+- Turf route: same conditions but turf surface (slower raw times, different decay profiles)
+- Turf sprint: same (rare in US, sparse data)
+
+Within a single race all horses are on the same surface at the same distance, so ratings are directly comparable regardless of which surface anchor was used.
+
+**What this means for 2yos, fillies, etc.:**
+
+They naturally rate LOWER than the canonical race — and that's correct. A 2yo rated 85 isn't "bad" — they're developing. A filly rated 92 isn't "weak" — she's giving weight to males. The rating captures the PHYSICAL REALITY without needing adjustment factors. The bettor sees "this 2yo rates 85 vs this field where the 4yo rates 105" and immediately knows the projection hierarchy.
+
+If a 2yo rates 105, THAT is remarkable — they're performing at a level above the average mature horse. That's the kind of signal that identifies a future champion.
 
 ### 2. Stamina Index
 
@@ -59,31 +78,36 @@ A horse with decay 0.5 in a zone where median is 1.9: Stamina = 100 + (1.9 - 0.5
 
 Two horses can have identical Ratings but different Stamina values — that's the information that creates exotic value through pace interaction. The high-Speed/low-Stamina horse is the speed-and-fade type; the low-Speed/high-Stamina horse is the closer.
 
-### 3. Value Rating
+### 3. Value (Estimated Overlay %)
 
-**Derived from the gap between model rating and market-implied rating:**
+**Expressed as the estimated percentage overlay/underlay on this horse — not rating points, but expected return above/below fair.**
 
 ```
-market_implied_rating = rating that corresponds to the horse's odds-implied probability
-value = current_rating - market_implied_rating
+model_win_prob = from Benter combination (model + odds combined)
+odds_implied_prob = from closing odds (market consensus)
+value_pct = (model_win_prob / odds_implied_prob - 1) * 100
 ```
 
-How to compute market-implied rating:
-- From closing odds, derive each horse's win probability (normalized from odds)
-- Convert that probability to a projected finishing time (inverse of the model: what time would produce this probability given the field?)
-- Map that time to the rating scale
+"+40%" means "the model thinks this horse should be 40% shorter in the market than they are." In betting terms, if the model is right, a $1 win bet on this horse has an expected return of $1.40 long-term.
 
-Positive Value = model says this horse is better than the market thinks (underbet).
-Negative Value = model says this horse is worse than the market thinks (overbet).
+**Why percentage, not rating points:** "10 rating points of value" requires knowing what that means in betting terms. "+40% overlay" needs no translation — every horseplayer understands "I'm getting 40% more than I should."
 
-**Connection to wagering-analytics overlay data:**
-- AN1 showed that when prices are on top with fav in 2nd/3rd, trifectas are 15-21% overlaid
-- A +10 Value horse on top with a -5 Value horse (overbet fav) in 2nd/3rd is EXACTLY that structure
-- The Value column lets you immediately see where the crowd is wrong, which is where exotic equity concentrates
+**Value also needs a confidence range:**
+- The rating itself has uncertainty (±X)
+- Each bound of that uncertainty implies a different value estimate
+- Value at rating low-end: model_prob_at_low / odds_prob - 1
+- Value at rating high-end: model_prob_at_high / odds_prob - 1
+- Display as: "+40% (±15)" meaning the overlay is between +25% and +55%
 
-**Conviction = Value / Confidence:**
-- Value +14, Confidence ±8 → the edge likely exists (value > uncertainty)
-- Value +6, Confidence ±12 → the edge MIGHT exist (value within uncertainty)
+**Conviction:**
+- "+40% (±15)" → even at the worst case, there's a +25% edge. Strong conviction.
+- "+50% (±45)" → could be anywhere from +5% to +95%. The edge probably exists but the size is uncertain.
+- "+10% (±20)" → might actually be -10% (underlay). No conviction — pass.
+
+**Connection to wagering-analytics:**
+- AN1 showed trifectas are 15-21% overlaid when prices are on top + fav in 2nd/3rd
+- A positive-Value horse on top × negative-Value horse (overbet fav) underneath = the structural overlay compounds
+- The Value % on individual horses translates to LARGER % overlays in exotics because the mispricing multiplies across positions
 
 ### Form
 
@@ -92,6 +116,47 @@ form = (current_v0 - career_v0) / ms_per_point_for_v0
 ```
 
 Expressed as rating points above/below career baseline. A horse with Form +11 is running 11 points better than their career average — that's a significant improvement regardless of their absolute rating.
+
+## Performance-Impacting Factors (Research Needed)
+
+### Known factors from starters table
+
+| Field | Mechanism | Research question |
+|---|---|---|
+| `weight` | Biomechanical: more mass = more energy to accelerate and sustain | Regress v0 residual on weight. Expected ~0.3-0.5 ft/s per lb? Varies by horse/distance? |
+| `jockey_allowance` | Weight reduction for apprentice riders — but also a skill proxy (apprentices may be less tactical) | Does allowance produce the same velocity gain per lb as a top jock at heavier weight? Or is the skill offset real? |
+| `pp` (post position) | Geometric: inside = shorter path. Tactical: outside = cleaner trip. Varies by track geometry and distance. | Does pp correlate with v0 residuals controlling for ability? Is it track-specific (some tracks have strong rail bias)? |
+| `medication_equipment` | Lasix (L) = diuretic preventing exercise-induced pulmonary hemorrhage. Blinkers (b) = focus aid. First-time application often produces one-time performance jump. | Does "first time Lasix" or "blinker change" correlate with positive v0 surprise? How large? One-time or sustained? |
+| `last_raced_days_since` | Layoff fitness: too fresh = undertrained? Too long = need a race? The "bounce" after peak effort. | Is there an optimal days-since-last? Does the model's days_since_last in current_form already capture this? |
+| `last_raced_position` | Coming off a win = peak form vs energy depletion ("bounce"). Coming off a loss = declining or saving ground? | Independently predictive after controlling for v0_trend? |
+| `claimed` / `new_trainer_name` | Trainer change = new methods, potentially different training approach unlocks latent ability. Claiming trainers specifically look for improvement angles. | Do newly claimed horses systematically improve? By how much? How quickly? |
+| `entry` (coupled entry) | Not a performance factor but a wagering structure factor — coupled entries share a win pool, which affects odds-implied probability and exotic construction. | Impacts value calculation, not the rating itself. |
+
+### Known factors from races table
+
+| Field | Mechanism | Research question |
+|---|---|---|
+| `track_condition` | Off tracks (sloppy/muddy/yielding) change the biomechanics — some horses handle it, some don't. Our adj_v0 currently blends all conditions together for a horse. | Should we separate curves by track condition? Or flag "untested on off-going" as uncertainty? |
+| `run_up` | Distance from gate to timing start. Longer run_up = more acceleration before clock starts = inflated apparent v0. | Regress v0 on run_up distance — is there a systematic effect? Should we adjust? |
+| `temp_rail` | Moves the running path — affects inside/outside bias and total distance traveled. | Low priority — hard to quantify without detailed track geometry. |
+| `off_turf` | Race was moved from turf to dirt. Horses entered for turf surface may hate dirt. Their performance on dirt may be unrepresentative. | Flag off_turf starters as having unreliable dirt curves? |
+| `field_size` | More horses = more traffic trouble = more randomness. Also affects pace dynamics (more speed types in bigger fields). | Does field size systematically affect v0 residuals? Probably adds noise rather than bias. |
+| `weather` / `wind_speed` / `wind_direction` | Wind affects sprints more than routes. Headwind = slower apparent speed. | Low priority — data quality on wind is poor in Equibase charts. |
+
+### Priority for research (when database available)
+
+1. **Weight** — most direct biomechanical effect, cleanest signal, directly actionable for handicap races
+2. **Post position** — track-specific biases are well-known in the industry, we can validate/quantify
+3. **Medication/equipment changes** — "first time Lasix" is one of the most commonly cited positive indicators
+4. **Trainer change (claimed)** — actionable signal that's currently invisible to the model
+5. **Track condition** — determines whether to trust a horse's curve at all on today's surface
+6. **Run-up distance** — systematic bias in v0 measurement that may affect cross-track normalization
+
+### Factors that DON'T need separate research:
+
+- `last_raced_days_since` → already captured in `rkm_current_form.days_since_last` + time-weighted decay
+- `last_raced_position` → correlates with v0_trend (recent winner = likely positive trend)
+- `field_size` → adds noise, not systematic bias; already handled by probability normalization
 
 ## Open Questions
 
