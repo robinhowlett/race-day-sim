@@ -340,6 +340,166 @@ GROUP BY r.off_turf;
 
 ---
 
+## 10. Limited-Form Races (Maidens, First-Time Starters)
+
+**Goal:** Develop a framework for betting races where some or all participants have no prior performance curve — rather than automatically passing them.
+
+**Context:** During simulations, maiden races and races with first-time starters were almost always passed because the model had no curves to work with. This created a cascading problem: any horizontal sequence (Pick 4/5/6) that included such a race became unplayable. Tracks deliberately include these races in multi-leg sequences because they add uncertainty that inflates payoffs. Passing them forfeits that value entirely.
+
+### 10a. Crowd accuracy in limited-form races
+
+**Question:** Is the public BETTER or WORSE at pricing horses with no form? Insiders (trainers, clockers, bloodstock agents) may know more than the public in these spots. Or the uncertainty may cause the crowd to anchor on superficial signals (sire, trainer, price paid at auction) and misprice systematically.
+
+```sql
+-- Compare favorite win rate in maiden races vs open races
+SELECT 
+    CASE 
+        WHEN r.type LIKE '%MAIDEN%' THEN 'MAIDEN'
+        ELSE 'NON-MAIDEN'
+    END as race_category,
+    AVG(CASE WHEN s.choice = 1 AND s.official_position = 1 THEN 1.0 ELSE 0.0 END) as fav_win_rate,
+    AVG(CASE WHEN s.choice = 1 THEN s.odds END) as avg_fav_odds,
+    COUNT(DISTINCT r.id) as n_races
+FROM races r
+JOIN starters s ON s.race_id = r.id
+WHERE r.date BETWEEN '2012-01-01' AND '2015-12-31'
+  AND r.number_of_runners >= 7
+GROUP BY 1;
+
+-- Favorite ROI in maidens vs non-maidens (is the fav overbet or underbet?)
+SELECT 
+    race_category,
+    AVG(CASE WHEN s.choice = 1 AND s.official_position = 1 THEN s.odds ELSE -1.0 END) as flat_bet_roi
+FROM ...;
+
+-- Longshot (10/1+) win rate in maidens vs non-maidens
+SELECT 
+    race_category,
+    AVG(CASE WHEN s.odds >= 10 AND s.official_position = 1 THEN 1.0 ELSE 0.0 END) as longshot_win_rate,
+    COUNT(CASE WHEN s.odds >= 10 AND s.official_position = 1 THEN 1 END) as longshot_wins,
+    COUNT(CASE WHEN s.odds >= 10 THEN 1 END) as longshot_starts
+FROM ...;
+```
+
+**Output:** Whether maidens have higher/lower favorite win rates, whether longshots hit more often, and what the flat-bet ROI looks like by choice rank. This tells us: is the uncertainty random (public prices are still efficient) or systematic (specific biases to exploit)?
+
+### 10b. Pool dynamics in limited-form races
+
+**Question:** Do maiden races have smaller exotic pools (scared money stays away), more chalk concentration (everyone bets the one horse they "know"), or more dispersed betting (nobody knows, so they spread)?
+
+```sql
+-- Pool sizes: maiden vs non-maiden
+SELECT 
+    CASE WHEN r.type LIKE '%MAIDEN%' THEN 'MAIDEN' ELSE 'NON-MAIDEN' END as category,
+    e.bet_type,
+    AVG(e.pool) as avg_pool,
+    AVG(e.pool::float / r.number_of_runners) as avg_pool_per_runner,
+    COUNT(*) as n
+FROM races r
+JOIN exotics e ON e.race_id = r.id
+WHERE e.bet_type IN ('EXACTA', 'TRIFECTA', 'SUPERFECTA')
+  AND r.number_of_runners >= 7
+  AND r.date BETWEEN '2012-01-01' AND '2015-12-31'
+GROUP BY 1, 2;
+
+-- HHI (betting concentration) in maidens vs non-maidens
+-- Higher HHI = more concentrated on one horse = more vulnerable to upsets
+SELECT 
+    CASE WHEN r.type LIKE '%MAIDEN%' THEN 'MAIDEN' ELSE 'NON-MAIDEN' END,
+    AVG(rm.hhi) as avg_hhi
+FROM races r
+JOIN race_metrics rm ON rm.race_id = r.id
+GROUP BY 1;
+```
+
+**Output:** Whether maiden pools are thinner (less liquidity = harder to bet into) or have higher concentration (more opportunity for upset-based overlays). If HHI is higher in maidens, the crowd is MORE concentrated on chalk — meaning longshot exotic combos are MORE underlaid than in open races.
+
+### 10c. "Bomb" frequency and exotic payoffs
+
+**Question:** Do maiden races produce more extreme payoffs? If so, they're inherently valuable to include in horizontals.
+
+```sql
+-- Exotic payoff distribution: maiden vs non-maiden
+SELECT 
+    CASE WHEN r.type LIKE '%MAIDEN%' THEN 'MAIDEN' ELSE 'NON-MAIDEN' END as category,
+    e.bet_type,
+    AVG(e.payoff / NULLIF(e.unit, 0)) as avg_payoff,
+    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY e.payoff / NULLIF(e.unit, 0)) as median_payoff,
+    PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY e.payoff / NULLIF(e.unit, 0)) as p90_payoff,
+    AVG(CASE WHEN s_winner.odds >= 10 THEN 1.0 ELSE 0.0 END) as pct_longshot_winners
+FROM races r
+JOIN exotics e ON e.race_id = r.id AND e.bet_type = 'TRIFECTA' AND e.payoff > 0
+JOIN starters s_winner ON s_winner.race_id = r.id AND s_winner.official_position = 1
+WHERE r.number_of_runners >= 7
+GROUP BY 1, 2;
+```
+
+**Output:** Median and P90 trifecta payoffs in maidens vs non-maidens. If maiden tris pay significantly more (because upsets are more frequent), this directly informs horizontal strategy: maiden legs ADD value to sequences when you can spread.
+
+### 10d. Trainer patterns with first-time starters
+
+**Question:** Some trainers are known for winning first time out (ready on debut). Others use first starts as education. This is observable in the data without needing workout info.
+
+```sql
+-- Trainer win% with first-time starters (no last_raced_date)
+SELECT 
+    s.trainer_last, s.trainer_first,
+    COUNT(*) as n_firsters,
+    AVG(CASE WHEN s.official_position = 1 THEN 1.0 ELSE 0.0 END) as win_rate_firsters,
+    AVG(s.odds) as avg_odds_firsters
+FROM starters s
+JOIN races r ON r.id = s.race_id
+WHERE s.last_raced_date IS NULL  -- first time starter
+  AND r.type LIKE '%MAIDEN%'
+  AND r.date BETWEEN '2010-01-01' AND '2016-12-31'
+GROUP BY s.trainer_last, s.trainer_first
+HAVING COUNT(*) >= 20
+ORDER BY win_rate_firsters DESC;
+
+-- Compare: does the public properly price trainer first-out records?
+-- (if trainer wins 30% first out but their horses go off at odds implying 20%, they're underbet)
+SELECT 
+    trainer_tier,  -- bucket by first-out win rate
+    AVG(actual_win_rate) as actual,
+    AVG(implied_win_rate_from_odds) as market_implied,
+    actual - implied as edge
+FROM trainer_first_out_analysis
+GROUP BY trainer_tier;
+```
+
+**Output:** Trainer first-out win rates. Whether the market properly prices this information. If certain trainers systematically win first out at higher rates than their odds imply — that's a DIRECT edge in maiden races even without individual horse curves.
+
+### 10e. How to USE this in simulations
+
+Based on the research outputs, the approach for maiden races becomes:
+
+**If research shows maiden favorites are overbet (lower ROI than non-maiden favorites):**
+- This is a "bad favorite" situation BY DEFAULT in many maiden races
+- Spread wide against the chalk — the crowd is systematically wrong
+- ITP principles apply: the uncertainty makes these BETTER exotic races, not worse
+
+**If research shows trainer first-out patterns are mispriced:**
+- Use trainer records as a partial substitute for individual horse form
+- A first-time starter from a 30% first-out trainer at 8/1 has positive expected value
+- Include them on top of exacta/trifecta tickets
+
+**If research shows maiden exotics pay more on average:**
+- These races are VALUABLE in horizontal sequences
+- Don't pass them — spread them as "survival" legs with the understanding that the payoff boost when your other (high-conviction) legs hit more than compensates
+- The Pick 5 that includes two maiden races isn't a problem — it's an opportunity because the payoffs are inflated by the uncertainty
+
+**If research shows pools are thinner but more concentrated:**
+- Small pools + crowd on one horse = classic ITP setup (get where nobody else is)
+- Your spread tickets are going where the $48 recreational tickets can't reach
+
+**For the simulation protocol:** Replace "PASS — no model data" with a structured assessment:
+- What do we know about the favorite? (trainer record, breeding, public money patterns)
+- Is the pool structure favorable? (concentrated on chalk = overlaid longshots)
+- How does this race serve the SEQUENCE? (adds entropy to a horizontal = good if you spread)
+- What's the minimum-information bet? (spread to the non-obvious horses, exclude the overbet chalk)
+
+---
+
 ## Execution Priority
 
 | # | Research | Blocks | Effort |
@@ -353,5 +513,6 @@ GROUP BY r.off_turf;
 | 7 | Track condition | Conditional rating adjustment | Medium (within-horse analysis) |
 | 8 | Run-up distance | Normalization validation | Low (quick check) |
 | 9 | Off-turf reliability | Curve fitting quality | Low (quick check) |
+| 10 | Limited-form races | Horizontal strategy + maiden assessment | Medium (multi-query) |
 
-Items 1-2 block the rating system directly. Items 3-9 are improvements that refine the model but aren't required for the initial rating implementation.
+Items 1-2 block the rating system directly. Items 3-9 refine the model. Item 10 enables the simulation to handle full cards rather than cherry-picking only data-rich races.
