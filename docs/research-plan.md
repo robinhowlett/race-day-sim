@@ -862,4 +862,156 @@ These become inputs for the limited-form race assessment (item 10), giving us SO
 | 11 | Surface specialization | Cross-surface prediction + off-turf edge | Medium (correlation analysis) |
 | 12 | Point-in-time connections stats | Maiden/FTS assessment inputs | High (needs temporal computation) |
 
-Items 1-2 block the rating system directly. Items 3-9 refine the model. Items 10-12 enable the simulation to handle full cards including maiden races and surface switches.
+Items 1-2 block the rating system directly. Items 3-9 refine the model. Items 10-12 enable the simulation to handle full cards including maiden races and surface switches. Item 13 provides narrative validation and trip-trouble context.
+
+---
+
+## 13. Race Narrative Analysis (footnotes + trip comments)
+
+**Goal:** Use the human-authored race summary text (`races.footnotes` and `starters.comments`) to validate pace predictions, detect trip trouble that explains curve deviations, and generate projected narratives as part of the simulation output.
+
+### 13a. What's in the data?
+
+The `races.footnotes` field contains the official race description — a narrative written by the chart caller describing how the race unfolded. The `starters.comments` field contains per-horse trip notes (e.g., "bumped start," "4 wide into stretch," "blocked quarter pole").
+
+```sql
+-- Sample footnotes to understand format/content
+SELECT r.date, r.track, r.number, r.footnotes
+FROM handycapper.races r
+WHERE r.footnotes IS NOT NULL AND LENGTH(r.footnotes) > 100
+ORDER BY RANDOM()
+LIMIT 20;
+
+-- Sample per-horse comments
+SELECT s.horse, s.comments, s.finish_position, s.odds
+FROM handycapper.starters s
+WHERE s.comments IS NOT NULL AND LENGTH(s.comments) > 20
+ORDER BY RANDOM()
+LIMIT 30;
+
+-- Coverage: what % of races have footnotes? Has it changed over time?
+SELECT EXTRACT(YEAR FROM r.date) as year,
+       COUNT(*) as n_races,
+       AVG(CASE WHEN r.footnotes IS NOT NULL AND LENGTH(r.footnotes) > 50 THEN 1.0 ELSE 0.0 END) as pct_with_footnotes,
+       AVG(LENGTH(r.footnotes)) as avg_footnote_length
+FROM handycapper.races r
+GROUP BY 1 ORDER BY 1;
+
+-- Per-horse comment coverage
+SELECT EXTRACT(YEAR FROM r.date) as year,
+       AVG(CASE WHEN s.comments IS NOT NULL AND LENGTH(s.comments) > 5 THEN 1.0 ELSE 0.0 END) as pct_with_comments
+FROM handycapper.starters s
+JOIN handycapper.races r ON r.id = s.race_id
+GROUP BY 1 ORDER BY 1;
+```
+
+### 13b. Pace prediction validation
+
+**Question:** When the model predicts "contested pace" or "lone speed," does the official narrative confirm this?
+
+```sql
+-- For races where RKM has a pace prediction, extract the footnotes
+-- and compare (this requires NLP or manual review of a sample)
+SELECT r.date, r.track, r.number, r.footnotes,
+       rp.pace_scenario,
+       -- Top 3 by adj_v0 (the projected speed types)
+       array_agg(s.horse ORDER BY vc.adj_v0 DESC) FILTER (WHERE speed_rank <= 3) as projected_speed
+FROM handycapper.races r
+JOIN handycapper.rkm_race_performance rp ON rp.race_id = r.id
+JOIN handycapper.starters s ON s.race_id = r.id
+JOIN handycapper.rkm_velocity_curves vc ON SPLIT_PART(vc.horse_key, '|', 1) = s.horse
+    AND vc.surface = r.surface
+    AND vc.distance_zone = CASE WHEN r.furlongs > 6.5 THEN 'route' ELSE 'sprint' END
+WHERE r.footnotes IS NOT NULL
+  AND rp.pace_scenario IS NOT NULL
+GROUP BY r.date, r.track, r.number, r.footnotes, rp.pace_scenario
+LIMIT 50;
+```
+
+**Application:** During simulation, after revealing results, compare our projected pace narrative against the actual footnotes. "We said contested pace with Willy Pay fading — the chart says 'set pace under pressure, tired in the stretch.' Confirmed."
+
+### 13c. Trip trouble and performance deviation
+
+**Question:** Do horses with negative trip comments (`starters.comments`) systematically underperform their curves? If so, trip trouble is a hidden variable that explains v0_trend declines and "surprise" negatives.
+
+```sql
+-- Correlate trip comments with race performance surprise
+-- Look for keywords: "bumped", "steadied", "blocked", "wide", "checked", "stumbled"
+SELECT 
+    CASE 
+        WHEN s.comments ~* 'bump|steadied|blocked|checked|stumbled|clipped|crowded'
+        THEN 'TROUBLE'
+        WHEN s.comments ~* 'wide|4.wide|5.wide|6.wide|parked'
+        THEN 'WIDE_TRIP'
+        ELSE 'CLEAN'
+    END as trip_type,
+    AVG(rp.surprise) as avg_surprise,
+    STDDEV(rp.surprise) as std_surprise,
+    COUNT(*) as n
+FROM handycapper.starters s
+JOIN handycapper.rkm_race_performance rp ON rp.starter_id = s.id
+WHERE s.comments IS NOT NULL
+GROUP BY 1;
+```
+
+**Output:** If TROUBLE/WIDE_TRIP horses show systematically negative surprise (ran slower than their curve predicted), this confirms that trip notes contain real information about performance deviations. A horse with declining v0_trend but multiple "trouble" trips might actually be BETTER than the trend suggests — the model is measuring bad luck, not declining ability.
+
+### 13d. Generating projected narratives for simulation
+
+**Application for Edge Call / race-day-sim output:**
+
+Before the race, generate what the footnotes WOULD say if our pace projection plays out:
+
+> "Willy Pay broke sharply and established a clear lead through opening fractions of :23.1 and :46.8. Tinitus tracked in third, three lengths off the pace. Turning for home, Willy Pay began to tire as Gamblin Fever and Alajwad Dancer closed from mid-pack. Tinitus angled out at the quarter pole and finished determinedly."
+
+This is the "Edge Call" narrative — the story of what we THINK will happen based on the physics. After the race, comparing our projected narrative to the actual footnotes tells us:
+- Did the pace scenario unfold as expected?
+- Did the horse we thought would tire actually tire?
+- Did the closers actually close as projected?
+- Was there trip trouble the model couldn't foresee?
+
+### 13e. Building a trip-note vocabulary
+
+**Question:** What are the most common terms in `starters.comments` and what do they correlate with?
+
+```sql
+-- Most common comment patterns and their association with performance
+SELECT 
+    regexp_matches(s.comments, '(bumped|steadied|blocked|wide|checked|stumbled|rushed|rated|stalked|pressed|drew off|hand rode|driving|urged|all out)', 'gi') as term,
+    AVG(rp.surprise) as avg_surprise,
+    AVG(CASE WHEN s.official_position = 1 THEN 1.0 ELSE 0.0 END) as win_rate,
+    COUNT(*) as occurrences
+FROM handycapper.starters s
+JOIN handycapper.rkm_race_performance rp ON rp.starter_id = s.id
+WHERE s.comments IS NOT NULL
+GROUP BY 1
+ORDER BY occurrences DESC;
+```
+
+**Output:** A vocabulary of trip terms with their performance impact. "Hand rode" (jockey wasn't hard on them) correlates with positive surprise next start? "All out" (maximum effort) correlates with negative surprise next start (the "bounce")?
+
+This feeds back into the simulation: if a horse's last trip comment was "all out" and they won, they might be MORE vulnerable next time (energy depleted) even though their v0_trend looks positive.
+
+---
+
+## Execution Priority
+
+| # | Research | Blocks | Effort |
+|---|---|---|---|
+| 0a | Backfill unmapped columns | Items 1, 9, 11, 12 | Low (3 SQL statements) |
+| 0b | Data quality assessment | All items (determines date range) | Low (query-only) |
+| 1 | Canonical race identification | Rating anchor | Low (query-only) |
+| 2 | Scaling (ms per point) | Rating scale | Low (follows from #1) |
+| 3 | Weight impact | Handicap race rating adjustment | Medium (regression) |
+| 4 | Post position bias | Track-specific edge detection | Medium (per-track analysis) |
+| 5 | Medication/equipment | Form prediction improvement | Medium (sequential join) |
+| 6 | Trainer change | Form prediction improvement | Low (pre/post comparison) |
+| 7 | Track condition | Conditional rating adjustment | Medium (within-horse analysis) |
+| 8 | Run-up distance | Normalization validation | Low (quick check) |
+| 9 | Off-turf reliability | Curve fitting quality | Low (quick check) |
+| 10 | Limited-form races | Horizontal strategy + maiden assessment | Medium (multi-query) |
+| 11 | Surface specialization | Cross-surface prediction + off-turf edge | Medium (correlation analysis) |
+| 12 | Point-in-time connections stats | Maiden/FTS assessment inputs | High (needs temporal computation) |
+| 13 | Race narrative analysis | Pace validation + trip trouble + output layer | Medium (NLP + correlation) |
+
+Items 0a-0b are prerequisites. Items 1-2 block the rating system. Items 3-9 refine the model. Items 10-12 enable full-card simulation. Item 13 enriches the output layer and provides validation feedback.
