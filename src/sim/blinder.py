@@ -16,6 +16,7 @@ SELECT
     r.number_of_runners AS field_size,
     r.purse,
     r.track_condition,
+    r.total_wps_pool,
     s.id           AS starter_id,
     s.program,
     s.horse        AS horse_name,
@@ -27,10 +28,14 @@ SELECT
     vc.v0,
     vc.decay_rate,
     vc.adj_v0,
+    vc.adj_decay,
     vc.n_races     AS curve_races,
+    vc.n_observations,
     -- Current form (entering this race)
     cf.current_v0,
     cf.current_decay,
+    cf.career_v0,
+    cf.career_decay,
     cf.v0_trend,
     cf.n_recent_races,
     cf.days_since_last
@@ -47,6 +52,23 @@ WHERE r.track = %(track)s
 ORDER BY r.number, s.choice
 """
 
+POOL_SIZES_SQL = """
+SELECT
+    r.number AS race_number,
+    e.bet_type,
+    e.pool
+FROM handycapper.races r
+JOIN handycapper.exotics e ON e.race_id = r.id
+WHERE r.track = %(track)s
+  AND r.date = %(race_date)s
+  AND e.pool IS NOT NULL
+  AND e.bet_type IN (
+      'EXACTA', 'TRIFECTA', 'SUPERFECTA',
+      'PICK_3', 'PICK_4', 'PICK_5', 'PICK_6'
+  )
+ORDER BY r.number, e.bet_type
+"""
+
 
 def load_pre_race_card(conn, track: str, race_date: str) -> pd.DataFrame:
     """Load blinded pre-race card for a full day at one track.
@@ -55,11 +77,16 @@ def load_pre_race_card(conn, track: str, race_date: str) -> pd.DataFrame:
     No result information (finish_position, payoffs) is included.
     """
     df = pd.read_sql(PRE_RACE_CARD_SQL, conn, params={"track": track, "race_date": race_date})
-    for col in ["closing_odds", "furlongs", "v0", "decay_rate", "adj_v0",
-                "current_v0", "current_decay", "v0_trend"]:
+    for col in ["closing_odds", "furlongs", "v0", "decay_rate", "adj_v0", "adj_decay",
+                "current_v0", "current_decay", "career_v0", "career_decay", "v0_trend"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
+
+
+def load_pool_sizes(conn, track: str, race_date: str) -> pd.DataFrame:
+    """Load exotic pool sizes (pre-race information — pool sizes are public)."""
+    return pd.read_sql(POOL_SIZES_SQL, conn, params={"track": track, "race_date": race_date})
 
 
 def load_race_results(conn, track: str, race_date: str) -> pd.DataFrame:
