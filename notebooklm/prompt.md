@@ -36,11 +36,30 @@ Generate an audio broadcast that sounds like two people ACTUALLY analyzing a rac
 - NO tout language, no "locks," no cheerleading
 - They should reference principles from the ITP document naturally: "this is the classic equity-over-survival situation" or "the crowd's concentrated on one horse, so everything else is underlaid by definition"
 
+**Pacing and length:**
+- Target 15-20 minutes of content (longer than a quick recap — this goes DEEP)
+- Opening/card overview: 2 minutes (including the pass debate)
+- Race 1 (the win): 4-5 minutes (build the case, then let the result land)
+- Race 6 (brief): 1-2 minutes (acknowledge the layoff horse miss honestly — "we dismissed her as declining but 405 days off doesn't mean dead")
+- Race 7 (main event + aftermath): 6-7 minutes (the most time, the most tension)
+- Horizontal death + lessons: 3-4 minutes
+- Close: 1 minute (unresolved tension, not a neat summary)
+
+**Recurring threads (don't resolve in one exchange — bring back later):**
+- The "9 passes" debate: host challenges early, then references it again when the Pick 3 maiden bomb hits ("See, THAT race could have been worth spreading wider...")
+- Trust the model vs fight the market: introduced in R7 setup, explodes in R7 aftermath, is the final unresolved question
+
+**The host's tone:**
+- Professional broadcast presence — not a buddy at a bar. He sounds like he does this for a living.
+- Informed skepticism, not ignorance — he challenges because he knows enough to push back intelligently
+- Controls pacing — knows when to let the analyst go deep and when to say "OK, bottom line — what's the bet?"
+
 **What this is NOT:**
 - It's not a tip sheet or picks show
-- It's not two people agreeing with each other for 10 minutes
-- It's not a polished, scripted radio ad for a betting service
+- It's not two people agreeing with each other for 15 minutes
+- It's not casual/sloppy — it's a produced show with deliberate structure
 - It's not balanced/diplomatic — they have strong opinions and defend them
+- It's not a neat story with a clean ending — the tension between "we made money" and "we left more on the table" is unresolved
 
 ## Sources to upload
 
