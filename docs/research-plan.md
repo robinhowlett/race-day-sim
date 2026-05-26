@@ -500,6 +500,231 @@ Based on the research outputs, the approach for maiden races becomes:
 
 ---
 
+## 11. Surface Specialization and Cross-Surface Performance
+
+**Goal:** Determine how much horses' velocity profiles change between surfaces, whether most horses are surface-agnostic or specialists, and what happens to performance when a horse is asked to run on a surface they haven't tried (or rarely try) — particularly off-the-turf scenarios.
+
+### 11a. Do curves differ by surface within the same horse?
+
+**Question:** When a horse has run on both dirt and turf, how correlated are their v0 and decay values? Are they essentially the same horse on both surfaces, or do they transform?
+
+```sql
+-- Horses with curves on multiple surfaces
+SELECT 
+    SPLIT_PART(horse_key, '|', 1) as horse,
+    surface,
+    distance_zone,
+    adj_v0,
+    decay_rate,
+    n_races
+FROM rkm_velocity_curves
+WHERE SPLIT_PART(horse_key, '|', 1) IN (
+    SELECT SPLIT_PART(horse_key, '|', 1)
+    FROM rkm_velocity_curves
+    WHERE n_races >= 3
+    GROUP BY SPLIT_PART(horse_key, '|', 1)
+    HAVING COUNT(DISTINCT surface) >= 2
+)
+AND n_races >= 3
+ORDER BY horse, surface, distance_zone;
+
+-- Compute correlation of adj_v0 between surfaces for same horse/zone
+-- and the typical magnitude of difference
+WITH multi_surface AS (
+    SELECT 
+        SPLIT_PART(horse_key, '|', 1) as horse,
+        distance_zone,
+        MAX(CASE WHEN surface = 'Dirt' THEN adj_v0 END) as dirt_v0,
+        MAX(CASE WHEN surface = 'Dirt' THEN decay_rate END) as dirt_decay,
+        MAX(CASE WHEN surface = 'Turf' THEN adj_v0 END) as turf_v0,
+        MAX(CASE WHEN surface = 'Turf' THEN decay_rate END) as turf_decay
+    FROM rkm_velocity_curves
+    WHERE n_races >= 3
+    GROUP BY SPLIT_PART(horse_key, '|', 1), distance_zone
+    HAVING COUNT(DISTINCT surface) >= 2
+)
+SELECT 
+    distance_zone,
+    COUNT(*) as n_horses,
+    CORR(dirt_v0, turf_v0) as v0_correlation,
+    AVG(dirt_v0 - turf_v0) as avg_v0_diff,
+    STDDEV(dirt_v0 - turf_v0) as std_v0_diff,
+    CORR(dirt_decay, turf_decay) as decay_correlation,
+    AVG(dirt_decay - turf_decay) as avg_decay_diff
+FROM multi_surface
+WHERE dirt_v0 IS NOT NULL AND turf_v0 IS NOT NULL
+GROUP BY distance_zone;
+```
+
+**Output:** Correlation between surfaces (high = horses are similar on both, low = surface specialists exist). Distribution of differences (narrow = agnostic, wide = some horses transform). This tells us: can we use a horse's dirt curve to predict turf performance if they've never run on turf?
+
+### 11b. Surface preference by class/type
+
+**Question:** Are specialists more common at certain levels? Do claimers tend to be more surface-agnostic (they run wherever entered) while stakes horses are more selectively placed on their preferred surface?
+
+```sql
+-- Surface difference magnitude by class level
+WITH multi_surface_class AS (
+    SELECT 
+        SPLIT_PART(vc.horse_key, '|', 1) as horse,
+        vc.distance_zone,
+        MAX(CASE WHEN vc.surface = 'Dirt' THEN vc.adj_v0 END) as dirt_v0,
+        MAX(CASE WHEN vc.surface = 'Turf' THEN vc.adj_v0 END) as turf_v0,
+        -- Classify by typical race class from starters table
+        MODE() WITHIN GROUP (ORDER BY 
+            CASE WHEN r.purse >= 100000 THEN 'STAKES'
+                 WHEN r.purse >= 40000 THEN 'ALLOWANCE'
+                 ELSE 'CLAIMING' END
+        ) as typical_class
+    FROM rkm_velocity_curves vc
+    JOIN starters s ON SPLIT_PART(vc.horse_key, '|', 1) = s.horse
+    JOIN races r ON r.id = s.race_id
+    WHERE vc.n_races >= 3
+    GROUP BY SPLIT_PART(vc.horse_key, '|', 1), vc.distance_zone
+    HAVING COUNT(DISTINCT vc.surface) >= 2
+)
+SELECT typical_class, distance_zone,
+       COUNT(*) as n,
+       AVG(ABS(dirt_v0 - turf_v0)) as avg_abs_diff,
+       STDDEV(dirt_v0 - turf_v0) as spread
+FROM multi_surface_class
+WHERE dirt_v0 IS NOT NULL AND turf_v0 IS NOT NULL
+GROUP BY typical_class, distance_zone;
+```
+
+### 11c. Off-the-turf performance
+
+**Question:** When a race is moved from turf to dirt (the `off_turf` flag), how do horses with turf-only or turf-primary curves perform on dirt?
+
+```sql
+-- Performance of turf-primary horses in off-the-turf races
+SELECT 
+    CASE 
+        WHEN vc_turf.n_races >= 5 AND (vc_dirt.n_races IS NULL OR vc_dirt.n_races < 3) 
+        THEN 'TURF_PRIMARY'
+        WHEN vc_dirt.n_races >= 5 AND (vc_turf.n_races IS NULL OR vc_turf.n_races < 3)
+        THEN 'DIRT_PRIMARY'
+        ELSE 'DUAL_SURFACE'
+    END as surface_type,
+    r.off_turf,
+    AVG(s.official_position) as avg_finish,
+    AVG(CASE WHEN s.official_position <= 3 THEN 1.0 ELSE 0.0 END) as top3_rate,
+    COUNT(*) as n
+FROM races r
+JOIN starters s ON s.race_id = r.id
+LEFT JOIN rkm_velocity_curves vc_turf 
+    ON SPLIT_PART(vc_turf.horse_key, '|', 1) = s.horse AND vc_turf.surface = 'Turf'
+LEFT JOIN rkm_velocity_curves vc_dirt
+    ON SPLIT_PART(vc_dirt.horse_key, '|', 1) = s.horse AND vc_dirt.surface = 'Dirt'
+WHERE r.surface = 'Dirt'
+  AND r.off_turf = true
+GROUP BY 1, 2;
+```
+
+**Output:** Whether turf-primary horses underperform in off-the-turf scenarios vs dual-surface horses. If they do, this is a direct edge: in off-the-turf races, downgrade turf specialists and upgrade horses with proven dirt form.
+
+### 11d. Application to simulation
+
+If surface specialization is real:
+- Off-the-turf races become OPPORTUNITIES: turf specialists at short odds will underperform their form
+- Horses with strong DIRT curves in an off-the-turf race become overlaid (the crowd bet them based on turf form that doesn't transfer)
+- A horse's curve on the WRONG surface should be flagged as less reliable in the rating confidence band
+
+---
+
+## 12. Point-in-Time Trainer/Jockey/Breeding Statistics
+
+**Goal:** Build context for races where individual horse curves don't exist (maidens, first-time starters) by computing what was KNOWABLE about the connections at that point in history.
+
+### 12a. Trainer statistics entering each race date
+
+For any given race date, compute the trainer's record with:
+- First-time starters (win%, ROI, top-3 rate)
+- Second-time starters (debut runners returning)
+- Surface-specific records (trainer X with dirt maidens vs turf maidens)
+- Distance zone records (sprint vs route maidens)
+- Recent form (last 30/60/90 day strike rate)
+
+```sql
+-- Trainer first-out record as of a given date (point-in-time)
+-- For each race, look backward at this trainer's prior first-timers
+WITH trainer_history AS (
+    SELECT 
+        s.trainer_last, s.trainer_first,
+        r.date as race_date,
+        s.official_position,
+        s.odds,
+        r.surface,
+        CASE WHEN r.furlongs > 6.5 THEN 'route' ELSE 'sprint' END as zone
+    FROM starters s
+    JOIN races r ON r.id = s.race_id
+    WHERE s.last_raced_date IS NULL  -- first-time starters
+      AND r.type LIKE '%MAIDEN%'
+)
+-- For a target date, compute each trainer's prior FTS record
+SELECT trainer_last, trainer_first,
+       COUNT(*) as n_prior_fts,
+       AVG(CASE WHEN official_position = 1 THEN 1.0 ELSE 0.0 END) as fts_win_rate,
+       AVG(CASE WHEN official_position <= 3 THEN 1.0 ELSE 0.0 END) as fts_top3_rate,
+       AVG(odds) as avg_odds_when_fts
+FROM trainer_history
+WHERE race_date < '2014-09-06'  -- example target date
+GROUP BY trainer_last, trainer_first
+HAVING COUNT(*) >= 10;
+```
+
+### 12b. Jockey statistics
+
+Same concept — jockey records with first-time starters, at specific tracks, on specific surfaces. Point-in-time only (no future data leakage).
+
+```sql
+-- Jockey win% at this track in the prior 12 months
+SELECT s.jockey_last, s.jockey_first,
+       COUNT(*) as starts,
+       AVG(CASE WHEN s.official_position = 1 THEN 1.0 ELSE 0.0 END) as win_rate
+FROM starters s
+JOIN races r ON r.id = s.race_id
+WHERE r.track = 'GP'
+  AND r.date BETWEEN '2013-09-06' AND '2014-09-05'
+GROUP BY s.jockey_last, s.jockey_first
+HAVING COUNT(*) >= 20;
+```
+
+### 12c. Breeding / sire statistics
+
+For first-time starters, sire records at surface/distance give probabilistic information:
+- Does this sire produce speed types or stamina types?
+- What's the sire's first-out win rate?
+- Surface preference: does this sire's progeny perform better on dirt or turf?
+
+This requires the `breeding` table which has `sire` information.
+
+```sql
+-- Sire first-out statistics by surface
+SELECT b.sire,
+       r.surface,
+       COUNT(*) as n_progeny_starts,
+       AVG(CASE WHEN s.official_position = 1 THEN 1.0 ELSE 0.0 END) as win_rate,
+       AVG(s.odds) as avg_odds
+FROM breeding b
+JOIN starters s ON s.id = b.starter_id
+JOIN races r ON r.id = s.race_id
+WHERE s.last_raced_date IS NULL  -- first time out
+GROUP BY b.sire, r.surface
+HAVING COUNT(*) >= 15;
+```
+
+### 12d. Application to simulation
+
+These statistics don't replace velocity curves — they're a DIFFERENT kind of evidence for races where curves don't exist:
+- "This trainer wins 30% first out on dirt (vs 15% average). Their debutante at 6/1 is mispriced."
+- "This sire produces speed types — in a maiden sprint, the first-timer from this sire profiles as likely-to-be-on-the-lead."
+- "This jockey wins at 25% at this meet vs their 18% career rate — hot hand at this track."
+
+These become inputs for the limited-form race assessment (item 10), giving us SOMETHING to work with in maidens beyond "no data = pass."
+
+---
+
 ## Execution Priority
 
 | # | Research | Blocks | Effort |
@@ -514,5 +739,7 @@ Based on the research outputs, the approach for maiden races becomes:
 | 8 | Run-up distance | Normalization validation | Low (quick check) |
 | 9 | Off-turf reliability | Curve fitting quality | Low (quick check) |
 | 10 | Limited-form races | Horizontal strategy + maiden assessment | Medium (multi-query) |
+| 11 | Surface specialization | Cross-surface prediction + off-turf edge | Medium (correlation analysis) |
+| 12 | Point-in-time connections stats | Maiden/FTS assessment inputs | High (needs temporal computation) |
 
-Items 1-2 block the rating system directly. Items 3-9 refine the model. Item 10 enables the simulation to handle full cards rather than cherry-picking only data-rich races.
+Items 1-2 block the rating system directly. Items 3-9 refine the model. Items 10-12 enable the simulation to handle full cards including maiden races and surface switches.
