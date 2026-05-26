@@ -70,13 +70,59 @@ ORDER BY r.number, e.bet_type
 """
 
 
+PRE_RACE_CARD_SQL_NO_RKM = """
+SELECT
+    r.id           AS race_id,
+    r.number       AS race_number,
+    r.surface,
+    r.furlongs,
+    r.type         AS race_type,
+    r.conditions,
+    r.number_of_runners AS field_size,
+    r.purse,
+    r.track_condition,
+    r.total_wps_pool,
+    s.id           AS starter_id,
+    s.program,
+    s.horse        AS horse_name,
+    s.jockey_first || ' ' || s.jockey_last AS jockey,
+    s.trainer_first || ' ' || s.trainer_last AS trainer,
+    s.odds         AS closing_odds,
+    s.choice,
+    NULL::numeric  AS v0,
+    NULL::numeric  AS decay_rate,
+    NULL::numeric  AS adj_v0,
+    NULL::numeric  AS adj_decay,
+    NULL::int      AS curve_races,
+    NULL::int      AS n_observations,
+    NULL::numeric  AS current_v0,
+    NULL::numeric  AS current_decay,
+    NULL::numeric  AS career_v0,
+    NULL::numeric  AS career_decay,
+    NULL::numeric  AS v0_trend,
+    NULL::smallint AS n_recent_races,
+    NULL::smallint AS days_since_last
+FROM handycapper.races r
+JOIN handycapper.starters s ON s.race_id = r.id
+WHERE r.track = %(track)s
+  AND r.date = %(race_date)s
+ORDER BY r.number, s.choice
+"""
+
+
 def load_pre_race_card(conn, track: str, race_date: str) -> pd.DataFrame:
     """Load blinded pre-race card for a full day at one track.
 
     Returns DataFrame with one row per starter, sorted by race number then choice.
     No result information (finish_position, payoffs) is included.
+    Falls back to base-tables-only query if rkm tables don't exist.
     """
-    df = pd.read_sql(PRE_RACE_CARD_SQL, conn, params={"track": track, "race_date": race_date})
+    try:
+        df = pd.read_sql(PRE_RACE_CARD_SQL, conn, params={"track": track, "race_date": race_date})
+    except Exception:
+        conn.rollback()
+        df = pd.read_sql(PRE_RACE_CARD_SQL_NO_RKM, conn, params={"track": track, "race_date": race_date})
+
     for col in ["closing_odds", "furlongs", "v0", "decay_rate", "adj_v0", "adj_decay",
                 "current_v0", "current_decay", "career_v0", "career_decay", "v0_trend"]:
         if col in df.columns:
