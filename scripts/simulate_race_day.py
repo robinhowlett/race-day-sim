@@ -264,16 +264,18 @@ def main():
 
     for race_num in race_numbers:
         race_results = results_df[results_df["race_number"] == race_num]
-        top4 = race_results[race_results["finish_position"] <= 4].sort_values("finish_position")
+        top4 = race_results[race_results["official_position"] <= 4].sort_values("official_position")
 
         parts = [f"R{race_num}:"]
         for _, r in top4.iterrows():
-            marker = "★" if r["finish_position"] == 1 else " "
-            parts.append(f"{marker}{r['program']}({r['odds']:.1f},ch{r['choice']})")
+            marker = "★" if r["official_position"] == 1 else " "
+            dq_flag = " DQ" if r.get("disqualified") else ""
+            dh_flag = " DH" if r.get("position_dead_heat") else ""
+            parts.append(f"{marker}{r['program']}({r['odds']:.1f},ch{r['choice']}){dq_flag}{dh_flag}")
         print(f"  {'  '.join(parts)}")
 
         # Payoffs
-        winner_row = race_results[race_results["finish_position"] == 1]
+        winner_row = race_results[race_results["official_position"] == 1]
         if not winner_row.empty:
             row = winner_row.iloc[0]
             payoffs = []

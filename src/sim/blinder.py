@@ -141,7 +141,12 @@ def load_race_results(conn, track: str, race_date: str) -> pd.DataFrame:
     SELECT
         r.id AS race_id, r.number AS race_number,
         s.id AS starter_id, s.horse AS horse_name, s.program,
-        s.finish_position, s.odds, s.choice, s.winner,
+        s.finish_position,
+        s.official_position,
+        s.wagering_position,
+        s.disqualified,
+        s.position_dead_heat,
+        s.odds, s.choice, s.winner,
         e_ex.payoff / NULLIF(e_ex.unit, 0) AS exacta_payoff,
         e_tri.payoff / NULLIF(e_tri.unit, 0) AS trifecta_payoff,
         e_sup.payoff / NULLIF(e_sup.unit, 0) AS super_payoff
@@ -151,6 +156,6 @@ def load_race_results(conn, track: str, race_date: str) -> pd.DataFrame:
     LEFT JOIN handycapper.exotics e_tri ON e_tri.race_id = r.id AND e_tri.bet_type = 'TRIFECTA' AND e_tri.payoff > 0
     LEFT JOIN handycapper.exotics e_sup ON e_sup.race_id = r.id AND e_sup.bet_type = 'SUPERFECTA' AND e_sup.payoff > 0
     WHERE r.track = %(track)s AND r.date = %(race_date)s
-    ORDER BY r.number, s.finish_position
+    ORDER BY r.number, s.official_position
     """
     return pd.read_sql(sql, conn, params={"track": track, "race_date": race_date})
