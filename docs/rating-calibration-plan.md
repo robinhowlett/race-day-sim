@@ -216,34 +216,6 @@ Where scale_factor converts residual velocity uncertainty to rating points.
    - `compute_confidence(n_races, residual_std)`
 4. Integrate into runner script output and conversational simulation format
 
-## Calibration Queries (run when on network)
+## Prerequisites
 
-```sql
--- 1. Anchor times by segment
-SELECT surface, distance_zone, age_group, sex,
-       AVG(projected_time) as anchor_time,
-       STDDEV(projected_time) as time_spread
-FROM winners_with_projections
-WHERE race_type IN ('ALLOWANCE', 'ALLOWANCE OPTIONAL CLAIMING')
-GROUP BY surface, distance_zone, age_group, sex;
-
--- 2. Class level offsets (how much faster are stakes winners vs claiming winners?)
-SELECT class_level, surface, distance_zone,
-       AVG(projected_time) as avg_winner_time
-FROM winners_with_projections
-GROUP BY class_level, surface, distance_zone;
-
--- 3. Weight impact
-SELECT weight_carried, 
-       AVG(v0_residual) as avg_residual,
-       COUNT(*) as n
-FROM starters_with_curves
-GROUP BY weight_carried
-ORDER BY weight_carried;
-
--- 4. 2yo maturation curve
-SELECT months_since_first_start,
-       AVG(v0_trend) as avg_trend
-FROM current_form_2yos
-GROUP BY months_since_first_start;
-```
+All calibration queries and empirical research are documented in `docs/research-plan.md`. Items 1-2 (canonical race identification + scaling) must complete before this output format can be implemented. Items 3-9 (weight, pp, medication, etc.) are refinements that improve accuracy but aren't required for initial deployment.
