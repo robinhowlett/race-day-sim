@@ -24,8 +24,17 @@ src/sim/
 ├── blinder.py      — Pre-race card + pool sizes (blinded) + post-race reveal
 ├── probability.py  — Benter combination + Stern-Harville matrix + fair value
 ├── pace.py         — Pace prediction from v0/decay profiles with running style classification
+├── payoff.py       — Projected exotic payoffs via OLS models (overlay/underlay quantification)
+├── horizontal.py   — Pick 3/4/5/6 equity assessment + takeout reduction analysis
 ├── kelly.py        — Fractional Kelly staking
 └── evaluate.py     — Post-race P&L + day summary
+
+models/
+├── payoff_coefficients.json  — OLS model coefficients (from wagering-analytics)
+└── jitter_calibration.json   — Per-leg odds uncertainty for horizontal projection
+
+scripts/
+└── simulate_race_day.py  — Full simulation runner (interactive or batch)
 
 docs/
 ├── simulation-protocol.md  — Step-by-step protocol for valid simulations
@@ -37,6 +46,9 @@ docs/
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
+
+# Run a simulation
+python scripts/simulate_race_day.py --track GP --date 2014-09-06
 ```
 
 ## Database
