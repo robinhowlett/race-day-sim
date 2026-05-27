@@ -310,3 +310,130 @@ After Tier 1 fixes are validated, address the cross-cutting issues (date ranges,
 - Many of the "HIGH severity" findings interact. Fixing them one at a time is the only way to know which contributed what.
 - The known `odds_to_rating` rank-mapping issue (in `edge-calibration-issue.md`) is separate from these findings but compounds with them.
 - Phase 3 RKM recompute (lower MIN_PRIOR_RACES) is still pending. Should be done AFTER fixing the loop-bound bug (RKM-T1.3) so the recompute actually picks up 2nd-start horses.
+
+---
+
+## Tier 3: Protocol/Code Alignment Issues
+
+A second-pass audit examined `simulation-protocol.md`, `wagering-framework.md`, `itp-principles.md`, `itp-wagering-framework.md`, and `research-plan.md` against the actual code. Findings: **the wagering protocol is mostly aspirational with respect to the code.** The code implements rating computation and a single conviction filter; nearly every wagering rule documented in the protocol is unenforced.
+
+### PROTO-T3.1 — `register_bet()` performs zero validation
+
+**File:** `scripts/run_simulation.py:164-169`
+
+No checks for: programs in race, structural validity (TRIFECTA needs 3 positions), pool minimums, win-bet minimum odds (3.0/1 — labeled but not enforced), horizontal conviction-leg minimum (constant defined, never read), bet type whitelist. **Critically: the evaluator only handles WIN and EXACTA — registered TRIFECTA/SUPERFECTA/PICK_N silently never match → counted as MISS even if they cash.** Real bug, not just a protocol violation.
+
+**Severity:** HIGH
+
+### PROTO-T3.2 — Equity test computed but never enforced as a gate
+
+**Files:** `src/sim/horizontal.py:39-101`, `src/sim/payoff.py:168-209`, `scripts/run_simulation.py`
+
+`evaluate_leg_selections()` and `estimate_combo_value()` compute equity ratios. But:
+- `run_simulation.py` doesn't import either module
+- `simulate_race_day.py` uses them only for display, never gating
+- `flashing_stop_sign` flag is computed but never consulted
+
+The single most-emphasized rule in the protocol ("Every combination must pass the equity test before inclusion") is purely advisory.
+
+**Severity:** HIGH
+
+### PROTO-T3.3 — Horizontal equity formula is wrong (uses cheap shortcut)
+
+**File:** `src/sim/horizontal.py:39-58`
+
+`estimate_leg_equity()` returns `(odds + 1) / n_horses_used` — treats per-horse stake as `ticket_cost / N` per-leg, ignoring full ticket geometry. The protocol's Step E.4 worked example uses a different (correct) formula based on per-combo cost vs surviving combo value across the full ticket. The two formulas can disagree — a horse "loses equity" in one but "gains" in the other.
+
+The `ticket_cost_per_combo` parameter is accepted but never used.
+
+**Severity:** HIGH
+
+### PROTO-T3.4 — Press mechanic is doc-only, no code support
+
+Searched all of `src/sim/` and `scripts/` — zero hits for `press`, `basket`, `multiplier`, `tier`. The protocol's "press at 2x/3x/4x with layered baskets (Win + Exacta key + Trifecta pressed + cover)" has no datatype, no helper, no enforcement.
+
+**Severity:** HIGH
+
+### PROTO-T3.5 — "Never exclude favorite from 2nd/3rd unless total collapse" — unenforced
+
+The protocol's E.5 critical rule has no code enforcement. `payoff.py` accepts `fav_position=None` silently.
+
+**Severity:** HIGH
+
+### PROTO-T3.6 — Decision tree (E.1 opinion classification) not implemented
+
+`protocol_check()` produces a flat list of horses with positive worst-case edge. The protocol's six-class taxonomy (STRONG specific, MODERATE specific, STRONG negative, STRUCTURAL, SPREAD, NO OPINION) and its mapping to pool selection is left to user judgment. CLAUDE.md claims the scaffold "applies protocol rules deterministically" — only one rule is actually deterministic.
+
+**Severity:** HIGH
+
+### PROTO-T3.7 — Two scaffolds, fragmented capabilities
+
+`run_simulation.py` (the "recommended" one) has registration and evaluation but no equity/payoff projection. `simulate_race_day.py` has equity displays but no registration/evaluation. The two don't share helpers, and the "recommended" entry-point lacks the very tool (`estimate_combo_value`) the protocol's equity test needs.
+
+**Severity:** MEDIUM
+
+### PROTO-T3.8 — Flat Kelly sizing ignores Fav-Edge tier modifiers
+
+**File:** `src/sim/kelly.py:56-97`
+
+`size_bets()` has no `fav_edge` parameter. Protocol prescribes basket weight scaling: `Fav Edge < -10` → maximum basket, `> +5` → small play / pass. WCMI sizing modifiers (1.5x for low WCMI, 0.25x for band crossing zero) also not implemented.
+
+**Severity:** MEDIUM
+
+### PROTO-T3.9 — ITP concepts referenced as rules but not coded
+
+Searched — zero hits for `kill_shot`, `hurdle`, `basket`, `win_only`. The doc treats these as rules ("verified against source transcripts") but the code can't enforce them.
+
+**Severity:** MEDIUM
+
+### PROTO-T3.10 — FTS rule contradiction across docs
+
+`itp-principles.md:124-126` says "FTS on top only, NEVER underneath." `wagering-framework.md:200-206` says "elite FTS trainer at 8/1 is a legitimate inclusion underneath." `ratings.py` follows the latter. Code and one doc agree; the other doc disagrees. A user reading itp-principles.md would think they're following protocol while actually breaking it.
+
+**Severity:** MEDIUM
+
+### PROTO-T3.11 — Place betting forbidden by ITP, not blocked by code
+
+ITP doc says "never place bet." `register_bet()` accepts any bet_type string including "PLACE" — would be invested but never matched (silent loss).
+
+**Severity:** MEDIUM
+
+### PROTO-T3.12 — Pool minimum thresholds never checked
+
+Protocol says trifectas need $20K+ pool, Pick 3/4 need $50K+. `tri_pool` is computed for display only, never compared against any threshold.
+
+**Severity:** MEDIUM
+
+### PROTO-T3.13 — Horizontal qualification (2+ conviction legs) unenforced
+
+`MIN_HORIZONTAL_CONVICTION_LEGS = 2` is defined at `run_simulation.py:33` and never referenced again. Users can register Pick 3 with 1 conviction leg + 3 random spread legs.
+
+**Severity:** MEDIUM
+
+### Dead code findings
+
+- `kelly_exotic` (kelly.py:26-53) — not called from any script
+- `evaluate_race` (evaluate.py:6) — imported in simulate_race_day.py but never called
+- `MIN_EDGE_CONVICTION = 0` — misleadingly named (the check is `worst_case > 0`; constant is a no-op)
+
+### Phase D: Protocol/Code Alignment Fixes
+
+After verifying Tier 1/2 findings, address:
+
+1. **Make `register_bet` validate** (programs in race, structural validity, bet type whitelist, pool minimums, win-bet odds floor) — HIGH priority because invalid bets silently mis-grade
+2. **Extend evaluator** to handle TRIFECTA, SUPERFECTA, PICK_N, DAILY_DOUBLE, QUINELLA — currently anything past EXACTA silently MISSES
+3. **Decide on ITP rules:** either delete from docs (acknowledge they're judgment) or implement enforcement
+4. **Fix horizontal equity formula** to use full ticket geometry, then make it a registration gate
+5. **Resolve FTS contradiction** between itp-principles.md and wagering-framework.md
+6. **Implement opinion classification** in `protocol_check` (six types from Step E.1)
+7. **Decide whether press/basket structure** is worth coding, or document as judgment-only
+
+---
+
+## Coverage notes
+
+This audit covered code logic, statistical calibration, pre-race firewall integrity, and protocol/code alignment. NOT covered:
+- DB-side data quality (the underlying `handycapper` schema — assumed correct from pdf-importer)
+- Performance / scaling (heavy queries over the SSH tunnel, etc.)
+- Wagering psychology / discipline (whether the protocol is correct in principle, only whether the code enforces it)
+- Long-run statistical validity (whether 100+ sim days would actually show edge)
