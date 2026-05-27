@@ -527,7 +527,412 @@ After verifying Tier 1/2 findings, address:
 ## Coverage notes
 
 This audit covered code logic, statistical calibration, pre-race firewall integrity, and protocol/code alignment. NOT covered:
-- DB-side data quality (the underlying `handycapper` schema — assumed correct from pdf-importer)
 - Performance / scaling (heavy queries over the SSH tunnel, etc.)
 - Wagering psychology / discipline (whether the protocol is correct in principle, only whether the code enforces it)
 - Long-run statistical validity (whether 100+ sim days would actually show edge)
+
+A second pass added: shared docs (`/github/docs/`), pdf-importer, and chart-parser.
+
+---
+
+## Tier 4: Shared Docs (`/github/docs/`)
+
+The shared specs directory contains stale copies of specs now living in repo-specific dirs, plus cross-cutting documents (`GUIDE.md`, `intents.md`, `handycapper-schema.md`).
+
+### DOC-T4.1 — `handycapper-schema.md` "Unmapped Columns" section is fully stale
+
+**File:** `/github/docs/specs/handycapper-schema.md:56,59,73,260-267`
+
+Spec claims `age_code`, `female_only`, `off_turf` are NOT mapped. They are mapped in `pdf-importer/src/main/java/.../RaceWriter.java:219, 222, 233`.
+
+**Verification:** Code confirms. No DB needed.
+
+**Fix:** Update the spec's "Unmapped Columns" section to remove these three fields. Note that historical data may still need backfill (which we did manually).
+
+**Severity:** HIGH
+
+### DOC-T4.2 — `chart-parser.md` vs `handycapper-schema.md` disagree on `favorite` provenance
+
+**Files:** `chart-parser.md:52` (PDF asterisk) vs `handycapper-schema.md:139` (computed from `choice = 1`)
+
+Actual code (`Starter.java:110`): extracted from PDF asterisk. Schema doc is wrong.
+
+**Fix:** Update `handycapper-schema.md:139` to reflect that `favorite` is parsed directly, not computed from `choice`.
+
+**Severity:** HIGH
+
+### DOC-T4.3 — `intents.md` AN1 status row contradicts itself
+
+**File:** `/github/docs/intents.md`
+
+AN1 row marked `done` but Notes column says "Pending: stern_fair population, Phase 5 jitter, Phase 6 model fit." These are now actually done in wagering-analytics, so the Notes is the stale part.
+
+**Fix:** Update AN1 row Notes to reflect actual completion. AN2 row similarly references archived `race-day-simulation.md` spec but the actual AN2 is `market-bias-analysis.md` (a different concept).
+
+**Severity:** HIGH (but limited blast radius — internal planning doc)
+
+### DOC-T4.4 — Schema spec attributes V002/V003 migrations to wrong repo
+
+**File:** `handycapper-schema.md:11`
+
+Lists `race_probabilities`, `race_metrics`, `exotic_race_legs` as "wagering-analytics (migrations)". Actual migrations live at `redboarders/db/migrations/V002__analysis_schema.sql` and `V003__race_analysis_views.sql`. wagering-analytics has no migrations directory.
+
+**Fix:** Update ownership attribution. Or move the migrations to wagering-analytics if that's the intended owner.
+
+**Severity:** MEDIUM
+
+### DOC-T4.5 — Schema spec missing `race_wcmi` and `trainer_ae_profiles` tables
+
+**File:** `handycapper-schema.md`
+
+These tables exist (created by AN2 scripts) and `race-day-sim/CLAUDE.md` declares dependencies on them, but the schema spec doesn't list them.
+
+**Fix:** Add table descriptions for both.
+
+**Severity:** MEDIUM
+
+### DOC-T4.6 — `predict_payoff()` surface format mismatch
+
+**File:** `exotic-payoff-analysis.md:419`
+
+Spec says `surface: str # 'D', 'T', 'S'`. Actual DB values: `'Dirt', 'Turf', 'Synthetic'`. AN1 `predict_payoff` would silently fail or all-default if passed `'D'`.
+
+**Fix:** Update spec. If the implementation accepts long form, update spec; if it accepts short form, update implementation OR add normalization at the API boundary.
+
+**Severity:** MEDIUM
+
+### DOC-T4.7 — Three different AN1 row count claims
+
+`intents.md`: 2.16M rows. `exotic-payoff-analysis.md`: 1.07M trifecta rows. `wagering-analytics/CLAUDE.md`: 2.9M rows.
+
+**Verification:** Query `SELECT COUNT(*) FROM exotic_harville_ratios`. Update all three to match.
+
+**Severity:** MEDIUM
+
+### DOC-T4.8 — `rkm-v3.md` phase numbers don't align with implementation
+
+Spec describes 5 phases (curve fitting, hierarchical pooling, track adjustment, pace interaction, market combination). Implementation has 6 phases (compute_curves, compute_adjustments, compute_race_performance, compute_market, compute_form, compute_situations). Phase numbers don't line up — spec Phase 5 = Benter, impl Phase 5 = current form.
+
+**Fix:** Add a phase-alignment table to rkm-v3.md showing spec phase → impl phase mapping. Or rewrite the spec to match implementation.
+
+**Severity:** MEDIUM
+
+### DOC-T4.9 — Promised but unbuilt features
+
+Several specs promise features that don't exist:
+- Hi-5 and Quinella vertical models in `exotic-payoff-analysis.md`
+- Segmented `stern_calibration` table in `exotic-payoff-analysis.md`
+- "Composite Edge Score" in `market-bias-analysis.md` Phase 4
+- "FDS forecast" / Field Dispersion Score in `rkm-v3.md`
+- Hierarchical pooling in `rkm-v3.md` Phase 2
+
+**Fix:** Either build them or mark them as "deferred" in the specs. Don't leave specs in an aspirational state.
+
+**Severity:** LOW (specs are aspirational by nature, but inconsistent with reality)
+
+### DOC-T4.10 — Archived `race-day-simulation.md` has multiple SQL bugs
+
+**File:** `archive/race-day-simulation.md`
+
+If anyone resurrects this archived spec, they hit: `s.name` (wrong, it's `s.horse`), undefined param names (`p_track` vs `p_target_track`), references `model_prob` from wrong table, hardcodes `r.breed = 'Thoroughbred'` (actual value is `'TB'`), uses `wagering_position = 1` (NULL for ~7.5% of races). Multiple bugs.
+
+**Fix:** Mark the file with a prominent "ARCHIVED — DO NOT USE" header. Or delete it entirely.
+
+**Severity:** LOW (archived, low resurrection probability)
+
+### DOC-T4.11 — `rkm_market_analysis`, `rkm_current_form`, `rkm_race_situations` schema specs underspecified
+
+The schema spec lists 3 of ~13 columns for `rkm_race_situations`, misses `career_v0/career_decay/n_recent_races/race_id/horse_key` for `rkm_current_form`, and misses `combined_prob` for `rkm_market_analysis`.
+
+**Verification:** `\d+ rkm_*` in psql to get actual column lists.
+
+**Fix:** Update schema spec to reflect actual columns.
+
+**Severity:** MEDIUM
+
+### DOC-T4.12 — `GUIDE.md` repo inventory misses active repos
+
+Doesn't list `rkm`, `wagering-analytics`, `race-day-sim` — the three repos doing the current AN1/AN2/AN3 work.
+
+**Fix:** Update GUIDE.md.
+
+**Severity:** LOW
+
+---
+
+## Tier 5: pdf-importer
+
+pdf-importer drives `chart-parser` (a private library) and writes to the `handycapper` schema. Three HIGH-severity findings affect downstream data quality.
+
+### IMP-T5.1 — `upsertRace` only updates 6 of 50+ columns on conflict
+
+**File:** `pdf-importer/src/main/java/.../pipeline/RaceWriter.java:154-166`
+
+The `doUpdate()` clause sets only `track_name, final_time, final_millis, dead_heat, number_of_runners, footnotes`. Every other race-level column silently retains the original value.
+
+**Why this matters:** This is the root cause of the `off_turf`/`female_only`/`age_code` hole. Those fields ARE coded into RaceWriter (lines 219, 222, 233) but never made it into rows imported BEFORE that code was added — because re-runs don't update the missing columns.
+
+**Verification:** Query rows with `imported_at` predating the RaceWriter change vs after. Compare `off_turf` populated rate. Pre-change rows should be NULL/false; post-change should match the spec's expected distribution.
+
+**Fix:** Either (a) expand `doUpdate()` to set every column with `EXCLUDED.col` for each field, or (b) change strategy to delete-and-reinsert per race_id (matching how starters are handled). Option (b) is simpler and matches existing pattern.
+
+**Severity:** HIGH
+
+### IMP-T5.2 — `cancelled` and `races` rows can co-exist for the same (date, track, number)
+
+**File:** `RaceWriter.java:126-152, 292-316`
+
+`writeRace` returns early if cancelled, writing only to `cancelled`. Never deletes from `races` (or vice versa). The two tables have separate unique constraints. If a race flips classification between runs, both tables hold rows.
+
+**Verification:**
+```sql
+SELECT r.track, r.date, r.number FROM handycapper.races r
+JOIN handycapper.cancelled c ON c.track = r.track AND c.date = r.date AND c.number = r.number;
+```
+Any rows returned = at least one race exists in both tables.
+
+**Fix:** In `writeRace`, when classification flips: delete from the OTHER table on conflict. Add a sanity-check view that asserts the two tables are disjoint.
+
+**Severity:** HIGH
+
+### IMP-T5.3 — `UNIMPORTABLE` status defined but never set
+
+**Files:** `model/ImportResult.java:11`, `pipeline/ImportTracker.java:62`, `PdfImporter.java:88-115`
+
+The enum value exists and the tracker treats it as "done", but no code path actually sets it. The 1,738 known unparseable PDFs (per `docs/zero-race-files.md`) were classified manually via direct SQLite UPDATE. On a fresh re-import, every PDF gets re-classified `PARSE_FAILED` and retried indefinitely.
+
+**Verification:** Inspect `ImportTracker` SQLite DB for any rows with status `UNIMPORTABLE`. They came from manual UPDATE statements, not code.
+
+**Fix:** Categorize known unparseable exception classes (encrypted PDFs, malformed structure, non-Equibase format) and have `recordFailure(...UNIMPORTABLE...)` flip them. Also: persist this categorization in source control somehow so other hosts inherit it.
+
+**Severity:** HIGH (operational — wastes CPU on every re-run)
+
+### IMP-T5.4 — `dead_heat` flag only marks WIN dead heats, not 2nd/3rd
+
+**File:** `chart-parser/.../RaceResult.java:804-815`
+
+`detectDeadHeat()` counts starters with `officialPosition == 1`. A dead heat for second/third is recorded on `starters.position_dead_heat = true` but invisible at the race level. Also has a hard-coded carve-out for the "2016 Parx Oaks debacle" that suppresses dead_heat even when data says co-winners.
+
+**Verification:**
+```sql
+SELECT race_id, COUNT(*) FROM handycapper.starters WHERE position_dead_heat = true
+GROUP BY race_id HAVING COUNT(*) > 0
+EXCEPT
+SELECT id, 1 FROM handycapper.races WHERE dead_heat = true;
+```
+
+**Fix:** Either rename `races.dead_heat` to `races.win_dead_heat` (truthful) or extend the detection to flag any-position dead heats. Document the Parx carve-out as a comment in the code.
+
+**Severity:** MEDIUM
+
+### IMP-T5.5 — `number_of_runners` counts coupled entries as separate
+
+**File:** `chart-parser/.../RaceResult.java:217-219`
+
+`getNumberOfRunners() = starters.size()`. A 1/1A coupled entry counts as 2.
+
+**Verification:**
+```sql
+SELECT r.id, r.number_of_runners, COUNT(*) FILTER (WHERE s.entry IS NOT NULL) as coupled_starters
+FROM races r JOIN starters s ON s.race_id = r.id
+WHERE s.entry IS NOT NULL
+GROUP BY r.id, r.number_of_runners;
+```
+
+**Fix:** Add a `number_of_wagering_interests` column = `COUNT(DISTINCT entry_program)`. Don't change `number_of_runners` (downstream depends on it as physical-horse count).
+
+**Severity:** MEDIUM
+
+### IMP-T5.6 — Scratched horses split on comma; commas in payouts mangle records
+
+**File:** `chart-parser/.../Scratch.java:55`
+
+`text.split(",")` will mangle `(Earned $1,234.00)` style annotations.
+
+**Fix:** Use a regex-based extractor that respects `(...)` grouping, OR pre-process to remove commas from amounts before splitting.
+
+**Severity:** MEDIUM (rare, but produces silent scratch losses)
+
+### IMP-T5.7 — Trainer/jockey suffix handling
+
+**File:** `chart-parser/.../Trainer.java:77-94`
+
+PDF format is "Last, First". For "Smith, John Jr." the suffix lands in firstName field. Inconsistent first/last splits cause downstream code joining on `(first, last)` to see two distinct entities for the same person.
+
+**Verification:** Query for trainer_first values containing 'Jr.', 'Sr.', 'II', 'III'. Inspect for the same trainer_last with and without the suffix in trainer_first.
+
+**Fix:** Post-process trainer/jockey first names to strip and re-attach known suffixes to last name. Or: introduce a separate `trainer_suffix` column. Or: build an alias mapping table for known same-person variants.
+
+**Severity:** MEDIUM
+
+### IMP-T5.8 — Schema spec lists `exotics.bet_type` and `exotics.pool_type` columns that don't exist
+
+**Files:** `handycapper-schema.md:196-197` vs actual `db/schema.sql:228-247`
+
+**Fix:** Either add the columns or remove from spec.
+
+**Severity:** LOW
+
+### IMP-T5.9 — `breeding` table is winners-only by design (NOT a bug)
+
+The PDF only prints sire/dam/breeder/foaling info in the Winner block. Non-winning starters have nothing to write. This is by source-data design, not pdf-importer's choice.
+
+**Implication for downstream:** Sire/dam analysis can only reference winners. Cannot compute "sire's progeny win rate" using just this table — would need an external data source for the denominator (all progeny). This was discovered earlier during Item 12 research; documented as permanent limitation.
+
+**Severity:** N/A — not a bug.
+
+---
+
+## Tier 6: chart-parser
+
+chart-parser is the upstream parsing library. ACTIVE (recent 2026 commits). Not deprecated.
+
+### CP-T6.1 — Disqualification cascade is incorrect for multiple DQs
+
+**File:** `chart-parser/.../ChartParser.java:580-599`
+
+`updateStartersAffectedByDisqualifications` reads `getOfficialPosition()` which has already been mutated by prior DQs in the loop. With multiple simultaneous DQs (real, per `DisqualificationTest.java`), the second iteration sees adjusted positions and applies wrong predicate. Starters can be missed (under-promoted) when 2+ DQs simultaneously demote past them. **No test** of the cascade itself.
+
+**Verification:** Find races with 2+ DQs in the data. Manually verify official positions match what the chart printed.
+```sql
+SELECT race_id, COUNT(*) FROM handycapper.starters
+WHERE disqualified = true
+GROUP BY race_id HAVING COUNT(*) >= 2;
+```
+
+**Fix:** Snapshot original `finishPosition` per starter, then compute adjusted position = original − count(DQs whose `originalPosition < finishPos AND newPosition >= finishPos`). Add tests covering 2-DQ, 3-DQ, 4-DQ scenarios.
+
+**Severity:** HIGH (silently wrong official positions)
+
+### CP-T6.2 — Trainer/Owner program-less fallback breaks outer loop after one assignment
+
+**File:** `ChartParser.java:505-510, 526-531`
+
+`break` exits the entire trainers loop. If a chart has multiple program-less entries, only the first gets assigned.
+
+**Fix:** Replace `break` with `continue` (or remove if loop continues naturally). Trivial code change.
+
+**Severity:** HIGH (silent data loss for older chart formats)
+
+### CP-T6.3 — Time-format regex tolerates malformed times (`.` matches `:`)
+
+**File:** `FractionalTimes.java:21`
+
+The `.` in `\d\d.\d\d` is unescaped — matches any character. Spurious matches produce strings that downstream `FractionalService.calculateMillisecondsForFraction` rejects, returning empty Optional. Fractions silently dropped.
+
+**Fix:** Escape the dot: `\d\d\.\d\d`.
+
+**Severity:** HIGH
+
+### CP-T6.4 — `IndividualTime.parse` rejects times ≥ 60 seconds with minutes
+
+**File:** `running_line/IndividualTime.java:14`
+
+Regex `\d{1,3}\.\d{1,3}` rejects format `1:11.45`. QH races for longer distances can produce these. Returns null → speed-index Rating null → fractional written with null millis.
+
+**Fix:** Update regex to accept `\d{1,2}:\d{1,2}\.\d{1,3}` as alternative.
+
+**Severity:** HIGH (affects QH long-distance races)
+
+### CP-T6.5 — Fractional fewer-than-expected fallback ignores QUARTER_HORSE/MIXED breeds
+
+**File:** `fractionals/FractionalService.java:67-90`
+
+Fallback uses TB-baseline speed constants (0.045 / 0.0647). Breed-aware adjustment only checks `Breed.ARABIAN`, not `QUARTER_HORSE` or `MIXED`. QH chart with one missing fractional silently assigns times to wrong points of call.
+
+**Fix:** Add QH and MIXED-breed speed constants. Or document that breeds outside TB/AR are unsupported.
+
+**Severity:** MEDIUM (affects non-TB races; small fraction of dataset but contaminates them silently)
+
+### CP-T6.6 — `feetBehind = lengths * 8.75` magic number
+
+**File:** `RaceResult.java:698`
+
+8.75 ft/length is plausible (a horse length ≈ ~9 ft) but undocumented. Now used for split-speed regression that writes to `indiv_fractionals`.
+
+**Fix:** Extract as a named constant (`FEET_PER_LENGTH = 8.75`) with sourcing comment. Make it overrideable for future research.
+
+**Severity:** MEDIUM
+
+### CP-T6.7 — `daysSince` uses `LocalDate.now()` instead of race date
+
+**File:** `running_line/LastRaced.java:96`
+
+The 2-digit year reducer uses `LocalDate.now().minusYears(80)`. Parsing the same PDF in different calendar years produces different `lastRaced` values for ambiguous 2-digit years.
+
+**Fix:** Pass the race date through and use it as the base for year disambiguation.
+
+**Severity:** MEDIUM
+
+### CP-T6.8 — Owner regex has no end anchor
+
+**File:** `Owner.java:20`
+
+`(\w+)?\s?-\s?(.+)` is greedy on `(.+)$`. If the `;` separator is ever missing/changed, the entire remainder collapses into one owner name with no warning.
+
+**Fix:** Add end anchor or stricter delimiter handling.
+
+**Severity:** LOW (separator format stable in practice)
+
+### CP-T6.9 — `isWinner()` uses `==` on boxed Integer
+
+**Files:** `Starter.java:623, 633`, `RaceResult.java:810`
+
+Works today via Integer cache for value 1, but latent footgun if refactor returns unboxed `int`.
+
+**Fix:** Use `.equals()` or `.intValue() == 1`. Trivial.
+
+**Severity:** LOW
+
+### CP-T6.10 — Per-starter trip notes from footnotes are NOT structured
+
+**File:** `Footnotes.java`
+
+Footnotes contain rich trip-note information ("rallied four wide", "checked early") tied to specific horse names but the parser flattens to a single text blob. Per-starter trip notes would feed RKM trip-trouble adjustments and are currently lost.
+
+**Fix:** Build a per-starter trip-note extractor that segments the footnotes by horse name and attaches phrases to `starters.trip_notes` (new column). This is a feature add, not a bug fix.
+
+**Severity:** LOW (data exists, just not structured)
+
+### CP-T6.11 — Single sample PDF, 28% complexity coverage
+
+**File:** `pom.xml`, two test fixtures
+
+Two test PDFs cover one TB raceday + one multi-page race. No QH-only, Arabian, walkover, cancellation, real DQ-cascade, broken-font edge cases.
+
+**Fix:** Expand fixture set. Add property-based tests for the regex parsers. Raise coverage threshold gradually as fixtures grow.
+
+**Severity:** LOW (testing gap, not a runtime bug)
+
+### CP-T6.12 — `convertToCsv` swallows IO errors
+
+**File:** `ChartParser.java:134-136`
+
+Catches `IOException`, logs, returns whatever was accumulated. Truncated multi-page PDFs return partial lists; caller can't distinguish "no charts" from "errored mid-stream".
+
+**Fix:** Wrap return value with a status indicator or rethrow. Caller (pdf-importer) can decide to retry or fail.
+
+**Severity:** LOW
+
+---
+
+## Updated Phase Priority
+
+After all four audit passes:
+
+**Tier 1 (system-breaking) and PROTO-T3.1/T3.2 (validation+evaluator)** remain top priority.
+
+**New high-priority additions:**
+- IMP-T5.1 (race-row update misses most columns) — root cause of off_turf-style data holes
+- IMP-T5.3 (UNIMPORTABLE never set) — wastes CPU every re-run
+- CP-T6.1 (DQ cascade with multi-DQ) — silently wrong official positions
+- CP-T6.2 (loop break bug) — silent data loss
+- CP-T6.3/T6.4 (time-format regex bugs) — silent fractional drops
+
+**Medium additions:**
+- DOC-T4.1 (schema spec stale on backfilled columns) — doc cleanup, prevents future confusion
+- DOC-T4.2 (favorite provenance) — schema doc accuracy
+- IMP-T5.4/T5.5 (dead_heat semantics, coupled entries in count)
+- CP-T6.5/T6.6/T6.7
+
+The pdf-importer/chart-parser issues are mostly silent corruption at the source. They affect every downstream calculation but are individually small. Worth running batch verification queries when DB access returns to estimate the actual data corruption rate before deciding which to fix first.
