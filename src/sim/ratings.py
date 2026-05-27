@@ -343,11 +343,15 @@ def format_race_ratings(card: pd.DataFrame, bias_df: pd.DataFrame,
     race_bias = bias_df[bias_df["race_number"] == race_number] if bias_df is not None else None
 
     # Pre-compute all ratings for field_ratings context
+    # Use current_v0/current_decay (time-weighted recent form) when available,
+    # fall back to career adj_v0/adj_decay
     all_ratings = []
     for _, starter in race.iterrows():
-        if pd.notna(starter.get("adj_v0")) and pd.notna(starter.get("adj_decay")):
+        v0 = starter.get("current_v0") if pd.notna(starter.get("current_v0")) else starter.get("adj_v0")
+        decay = starter.get("current_decay") if pd.notna(starter.get("current_decay")) else starter.get("adj_decay")
+        if pd.notna(v0) and pd.notna(decay):
             all_ratings.append(compute_rating(
-                starter["adj_v0"], starter["adj_decay"], distance_ft, zone,
+                float(v0), float(decay), distance_ft, zone,
                 surface=surface, furlongs=furlongs
             ))
         else:
@@ -381,16 +385,25 @@ def format_race_ratings(card: pd.DataFrame, bias_df: pd.DataFrame,
                 "bias_pts": 0.0,
             }
 
-        # Confidence from curve sample size
+        # Confidence band (± rating points)
+        # Based on sample size: fewer races = wider band
         n_races = starter.get("curve_races", 0) or 0
         if n_races >= 15:
-            confidence = "HIGH"
+            band = 3
         elif n_races >= 8:
-            confidence = "MOD"
+            band = 6
         elif n_races >= 3:
-            confidence = "LOW"
+            band = 10
         else:
-            confidence = "INSUF"
+            band = None  # insufficient — can't rate
+
+        # Format edge with band
+        if result["edge"] is not None and band is not None:
+            edge_str = f"{result['edge']:+.0f} (±{band})"
+        elif result["edge"] is not None:
+            edge_str = f"{result['edge']:+.0f}"
+        else:
+            edge_str = ""
 
         rows.append({
             "program": starter.get("program", ""),
@@ -398,9 +411,10 @@ def format_race_ratings(card: pd.DataFrame, bias_df: pd.DataFrame,
             "rating": result["rating"],
             "market": result["market_rating"],
             "edge": result["edge"],
+            "edge_display": edge_str,
+            "band": band,
             "bias_mult": result["bias_mult"],
             "form": round(float(starter.get("v0_trend", 0) or 0) / (MS_PER_POINT[zone] / 1000.0), 1),
-            "confidence": confidence,
             "odds": odds,
         })
 
