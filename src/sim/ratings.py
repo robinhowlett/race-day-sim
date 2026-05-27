@@ -421,6 +421,9 @@ def format_race_ratings(card: pd.DataFrame, bias_df: pd.DataFrame,
             w = 1.0 - np.exp(-curve_races / 8.0)  # slower ramp (career is noisier)
             w *= 0.7  # discount for using career instead of current form
         else:
+            # Phase 4 TODO: check for cross-zone data (e.g., sprint curve for a route race)
+            # If available, use at w = same_zone_w × CROSS_ZONE_CORRELATION (0.34 for routes)
+            # Requires blinder.py to also load the alternate-zone curve.
             v0 = None
             decay = None
             w = 0.0
