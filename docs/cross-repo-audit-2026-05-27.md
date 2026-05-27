@@ -323,6 +323,18 @@ A second-pass audit examined `simulation-protocol.md`, `wagering-framework.md`, 
 
 No checks for: programs in race, structural validity (TRIFECTA needs 3 positions), pool minimums, win-bet minimum odds (3.0/1 — labeled but not enforced), horizontal conviction-leg minimum (constant defined, never read), bet type whitelist. **Critically: the evaluator only handles WIN and EXACTA — registered TRIFECTA/SUPERFECTA/PICK_N silently never match → counted as MISS even if they cash.** Real bug, not just a protocol violation.
 
+**Verification approach:** No DB needed. Re-run a previous sim day's bets through `reveal_and_evaluate()` with a registered TRIFECTA — confirm it's marked MISS regardless of outcome. Cross-reference with the actual trifecta payoff to see if cash was hidden.
+
+**Fix:** In `register_bet()` add a validation block:
+- Look up the race's program numbers; raise if any in `programs` aren't in the field
+- Whitelist `bet_type` against an enum of supported types
+- For each bet_type, validate structure (TRIFECTA = 3 position lists; PICK3 = 3 leg lists)
+- Check `MIN_ODDS_WIN_BET` against the horse's odds for WIN bets
+- Check pool size against type-specific minimum (after pool data loaded)
+- Check horizontal conviction-leg count against `MIN_HORIZONTAL_CONVICTION_LEGS`
+
+Then extend `reveal_and_evaluate()` to handle TRIFECTA, SUPERFECTA, QUINELLA, DAILY_DOUBLE, PICK_3/4/5/6. Each needs a matching helper that takes the official_position-sorted top finishers and the bet's program structure, returns (hit, payout). PICK_N needs to walk leg-by-leg matching against each race's winner.
+
 **Severity:** HIGH
 
 ### PROTO-T3.2 — Equity test computed but never enforced as a gate
@@ -336,6 +348,12 @@ No checks for: programs in race, structural validity (TRIFECTA needs 3 positions
 
 The single most-emphasized rule in the protocol ("Every combination must pass the equity test before inclusion") is purely advisory.
 
+**Verification approach:** No DB needed. Grep for `flashing_stop_sign` and `equity_ratio` usages — confirm they're only in print statements, not in conditionals that reject bets.
+
+**Fix:** Add an `equity_check()` method on `SimDay` that takes a proposed bet, calls into `horizontal.evaluate_leg_selections()` for horizontals or `payoff.estimate_combo_value()` for verticals, and returns `(passes, reasons)`. Call this from `register_bet()` BEFORE appending to the bets list. If `passes=False`, raise an exception or print a warning + require an override flag (`force=True`) to register against the protocol's recommendation.
+
+Depends on PROTO-T3.3 being fixed first (the equity formula itself must be correct before gating on it).
+
 **Severity:** HIGH
 
 ### PROTO-T3.3 — Horizontal equity formula is wrong (uses cheap shortcut)
@@ -346,11 +364,33 @@ The single most-emphasized rule in the protocol ("Every combination must pass th
 
 The `ticket_cost_per_combo` parameter is accepted but never used.
 
+**Verification approach:** Construct the protocol's worked example as a test case ($120 Pick 3, 3×2×2 = 12 combos, $10/combo). Pass it through both formulas. Confirm cheap formula and protocol formula disagree on at least one horse's equity status.
+
+**Fix:** Rewrite `estimate_leg_equity()` to take the full leg structure (list of selections per leg) as input, not just one leg. The signature should be:
+```python
+def estimate_ticket_equity(leg_selections: list[list[dict]], total_cost: float)
+```
+For each combination (cartesian product of leg selections), compute:
+- `cost_per_combo = total_cost / n_combos`
+- For each horse in each leg: if that horse wins their leg, `surviving_combos = product of OTHER legs' widths`
+- `surviving_value_per_combo = parlay_payoff_at_their_odds_and_others_winning / surviving_combos` — this requires assumptions about other legs' winners (the protocol example assumes equal-prob across selections in other legs)
+- Compare `surviving_value_per_combo` to `cost_per_combo` to determine GAIN/LOSE equity
+
+Use the actually-prescribed formula from simulation-protocol.md Step E.4. Mark the old `estimate_leg_equity()` deprecated.
+
 **Severity:** HIGH
 
 ### PROTO-T3.4 — Press mechanic is doc-only, no code support
 
 Searched all of `src/sim/` and `scripts/` — zero hits for `press`, `basket`, `multiplier`, `tier`. The protocol's "press at 2x/3x/4x with layered baskets (Win + Exacta key + Trifecta pressed + cover)" has no datatype, no helper, no enforcement.
+
+**Verification approach:** Grep confirms absence. No DB needed.
+
+**Fix decision required first:** Should the press be CODE or JUDGMENT?
+- If code: extend `Bet` dataclass to support per-combo multipliers (instead of flat `amount`). `Bet.combinations: list[tuple[programs, multiplier]]`. The total amount becomes `sum(base_unit × multiplier × combos_in_group)`. Add a `Basket` class that bundles related Bets (Win + Exacta + Trifecta on the same conviction).
+- If judgment: delete the press section from simulation-protocol.md or move it to a "guidance" appendix. Stop claiming the scaffold "applies protocol rules deterministically" for sizing.
+
+Recommendation: code it. The press is a mechanical decision (combo identified as high-conviction → multiply by N) that benefits from automation. A `press_combos(combos, conviction_scores, base_unit, total_budget)` function could redistribute the budget proportionally to conviction.
 
 **Severity:** HIGH
 
@@ -358,17 +398,39 @@ Searched all of `src/sim/` and `scripts/` — zero hits for `press`, `basket`, `
 
 The protocol's E.5 critical rule has no code enforcement. `payoff.py` accepts `fav_position=None` silently.
 
+**Verification approach:** No DB needed. Code-grep confirms.
+
+**Fix:** In `register_bet()` validation block: if bet_type is TRIFECTA/SUPERFECTA and the favorite (program with lowest odds in the race, or `choice == 1`) is excluded from 2nd AND 3rd positions, require an explicit `expecting_total_collapse=True` flag in the rationale or a separate parameter. Otherwise warn or reject.
+
+The "expecting total collapse" judgment can't be coded fully — but the SCAFFOLD can require the user to acknowledge it explicitly (preventing accidental exclusion). Cross-reference with the model's pace prediction: `pace_scenario == "CONTESTED_HIGH_DECAY"` AND fav has high decay = some justification; otherwise the exclusion is suspect.
+
 **Severity:** HIGH
 
 ### PROTO-T3.6 — Decision tree (E.1 opinion classification) not implemented
 
 `protocol_check()` produces a flat list of horses with positive worst-case edge. The protocol's six-class taxonomy (STRONG specific, MODERATE specific, STRONG negative, STRUCTURAL, SPREAD, NO OPINION) and its mapping to pool selection is left to user judgment. CLAUDE.md claims the scaffold "applies protocol rules deterministically" — only one rule is actually deterministic.
 
+**Verification approach:** No DB needed. Code review of `protocol_check()` confirms — only `has_conviction` boolean flag.
+
+**Fix:** Add a `classify_opinion()` function called per race that returns one of the six categories with rationale:
+- STRONG specific: candidate exists with edge - band > 5
+- MODERATE specific: candidate exists with edge - band in (0, 5]
+- STRONG negative: fav_edge < -10 with band clear
+- STRUCTURAL: pace_scenario == CONTESTED_HIGH_DECAY AND multiple speed types AND multiple low-decay horses with positive Edge in middle of v0 distribution
+- SPREAD: 3+ candidates within ±3 Edge of each other, no clear leader
+- NO OPINION: top edge - band ≤ 0
+
+Then add `recommended_pool(opinion_type, race_summary)` returning one of WIN / EXACTA_KEY / TRIFECTA_EX_FAV / HORIZONTAL_LEG / PASS. Display these in the conviction-plays output so the user sees the protocol's recommendation BEFORE constructing tickets.
+
 **Severity:** HIGH
 
 ### PROTO-T3.7 — Two scaffolds, fragmented capabilities
 
 `run_simulation.py` (the "recommended" one) has registration and evaluation but no equity/payoff projection. `simulate_race_day.py` has equity displays but no registration/evaluation. The two don't share helpers, and the "recommended" entry-point lacks the very tool (`estimate_combo_value`) the protocol's equity test needs.
+
+**Verification approach:** Compare the imports + capabilities of both scaffolds (already done in audit). No DB needed.
+
+**Fix:** Pick one canonical entry-point and consolidate. Recommendation: keep `run_simulation.py` as the canonical, port the value-display features from `simulate_race_day.py` into it (or into `SimDay` methods), then delete `simulate_race_day.py` or make it a thin wrapper. CLAUDE.md should reference only the canonical script.
 
 **Severity:** MEDIUM
 
@@ -378,11 +440,25 @@ The protocol's E.5 critical rule has no code enforcement. `payoff.py` accepts `f
 
 `size_bets()` has no `fav_edge` parameter. Protocol prescribes basket weight scaling: `Fav Edge < -10` → maximum basket, `> +5` → small play / pass. WCMI sizing modifiers (1.5x for low WCMI, 0.25x for band crossing zero) also not implemented.
 
+**Verification approach:** No DB needed. Code review confirms.
+
+**Fix:** Extend `size_bets()` to take `race_context` (fav_edge, wcmi, band_crosses_zero, carryover_active) and apply the documented multipliers from wagering-framework.md:244. Order of operations: compute base Kelly, then apply context multipliers, then enforce MAX_EXPOSURE cap.
+
 **Severity:** MEDIUM
 
 ### PROTO-T3.9 — ITP concepts referenced as rules but not coded
 
 Searched — zero hits for `kill_shot`, `hurdle`, `basket`, `win_only`. The doc treats these as rules ("verified against source transcripts") but the code can't enforce them.
+
+**Verification approach:** Grep confirms.
+
+**Fix decision required first:** Are these enforceable rules or judgment guidance? Per ITP concept:
+- **Kill shot** (price on top, never both ways): codable. Reject `EXACTA #1/#2 + EXACTA #2/#1` if both are registered with the same horse as the longer price.
+- **Hurdle**: definitionally judgment — "deliberately reduce survival prob for equity gain." Can flag candidates ("this single creates a hurdle") but can't force the user to single.
+- **Basket of bets**: codable as a `Basket` datatype that bundles related bets at coordinated multipliers (see PROTO-T3.4).
+- **Win-only horses**: codable as a horse-level flag. Decay rate above some threshold + speed-and-fade profile = "win only" → reject placement underneath in exotics.
+
+Recommendation: code kill-shot rejection and win-only flag (low effort, prevent specific mistakes). Move "hurdle" and basket guidance to a judgment appendix.
 
 **Severity:** MEDIUM
 
@@ -390,11 +466,19 @@ Searched — zero hits for `kill_shot`, `hurdle`, `basket`, `win_only`. The doc 
 
 `itp-principles.md:124-126` says "FTS on top only, NEVER underneath." `wagering-framework.md:200-206` says "elite FTS trainer at 8/1 is a legitimate inclusion underneath." `ratings.py` follows the latter. Code and one doc agree; the other doc disagrees. A user reading itp-principles.md would think they're following protocol while actually breaking it.
 
+**Verification approach:** Cross-read both docs and confirm. Already done.
+
+**Fix:** Resolve to the research-revised position (wagering-framework.md): trainer-signal FTS can be included underneath, generic FTS overbet as a group. Update `itp-principles.md` to either remove the "never underneath" rule or add a footnote: "Original ITP guidance, superseded by research finding that elite-FTS-trainer horses are exception to this rule." `itp-principles.md` should be marked clearly as historical reference for ITP source material, not the operational protocol.
+
 **Severity:** MEDIUM
 
 ### PROTO-T3.11 — Place betting forbidden by ITP, not blocked by code
 
 ITP doc says "never place bet." `register_bet()` accepts any bet_type string including "PLACE" — would be invested but never matched (silent loss).
+
+**Verification approach:** No DB needed. Code-grep confirms.
+
+**Fix:** Part of PROTO-T3.1 bet-type whitelist. Either omit PLACE/SHOW from the whitelist (rejecting them at registration) or add a `--allow-place` flag for users who explicitly want to override. Recommendation: omit by default, document that ITP forbids them.
 
 **Severity:** MEDIUM
 
@@ -402,11 +486,21 @@ ITP doc says "never place bet." `register_bet()` accepts any bet_type string inc
 
 Protocol says trifectas need $20K+ pool, Pick 3/4 need $50K+. `tri_pool` is computed for display only, never compared against any threshold.
 
+**Verification approach:** No DB needed. Code-grep confirms.
+
+**Fix:** Add `MIN_POOL_BY_TYPE = {"TRIFECTA": 20000, "SUPERFECTA": 25000, "PICK_3": 50000, "PICK_4": 75000, "PICK_5": 100000, "PICK_6": 100000}` constant. In `register_bet()` validation, look up pool for the race × bet_type from `sim.pools` and reject if below threshold. Allow `--ignore-pool-min` override for testing.
+
 **Severity:** MEDIUM
 
 ### PROTO-T3.13 — Horizontal qualification (2+ conviction legs) unenforced
 
 `MIN_HORIZONTAL_CONVICTION_LEGS = 2` is defined at `run_simulation.py:33` and never referenced again. Users can register Pick 3 with 1 conviction leg + 3 random spread legs.
+
+**Verification approach:** Grep confirms. No DB needed.
+
+**Fix:** In `register_bet()` validation block, if bet_type starts with `PICK_` or is `DAILY_DOUBLE`: count how many of the legs' races have at least one conviction candidate (via `protocol_check`). Reject if count < `MIN_HORIZONTAL_CONVICTION_LEGS`.
+
+Edge case: a horizontal where you SINGLE the favorite in one leg and have a conviction longshot in another might count as 2 conviction legs even though one is a chalk single. The protocol intent is "at least one STRONG opinion" — could refine the check to require at least one leg with `worst_case > 5` (STRONG) and one more with any positive worst case.
 
 **Severity:** MEDIUM
 
