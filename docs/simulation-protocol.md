@@ -1,27 +1,38 @@
 # Simulation Protocol
 
-Step-by-step protocol for running a valid blinded race day simulation. This document exists because previous simulations violated the information firewall (reading post-race columns), applied statistical findings as rigid rules rather than priors, and failed to account for pool mechanics.
+Step-by-step protocol for running a valid blinded race day simulation.
+
+Core references:
+- `docs/wagering-framework.md` — quantitative wagering principles (Edge-driven, multiplicative bias)
+- `docs/research-findings.md` — empirical calibration data for all factors
+- `docs/rating-calibration-plan.md` — rating scale and display format
 
 ---
 
 ## Pre-Simulation: Race Day Selection
 
-1. **Track + date selection** — user provides OR Claude selects from mid/upper-tier tracks avoiding marquee days (Kentucky Derby, Breeders' Cup, Belmont Stakes, Travers, etc.) where training data contamination is likely.
-2. **Confirm data availability** — verify the card has ≥8 races, trifecta results exist, and pool sizes are recorded.
+1. **Hash-based selection** — user provides any text string. `scripts/pick_sim_day.py` hashes it to deterministically pick from 44K candidate days. Candidates are pre-filtered: ≥8 races, ≥7 trifecta results, avg field ≥7, avg tri pool ≥$10K, no Grade 1/2 stakes (contamination risk).
+2. **Or direct selection** — user provides track + date if they have a specific scenario to test. Avoid marquee days (Kentucky Derby, Breeders' Cup, Belmont, Travers, etc.) where LLM training data contamination is likely.
+3. **Confirm data** — verify card loads via `load_pre_race_card()` + `load_market_bias()`.
 
 ---
 
 ## Step 1: Load Pre-Race Data (BLINDER ON)
 
-Query ONLY these columns:
+Three data loads at simulation start:
+
+1. **`load_pre_race_card()`** — race card + velocity curves + current form
+2. **`load_pool_sizes()`** — exotic pool sizes (public pre-race information)
+3. **`load_market_bias()`** — point-in-time trainer/jockey/equipment signals (all backward-looking from race date, no future leakage)
 
 ### ALLOWED pre-race:
-- `races`: number, furlongs, surface, type, conditions, purse, number_of_runners
-- `starters`: program, horse, odds, choice, trainer_last, jockey_last, last_raced_days_since
+- `races`: number, furlongs, surface, type, conditions, purse, number_of_runners, off_turf
+- `starters`: program, horse, odds, choice, trainer_last, jockey_last, weight, jockey_allowance
 - `rkm_current_form`: current_v0, current_decay, career_v0, career_decay, v0_trend, n_recent_races, days_since_last
 - `rkm_velocity_curves`: v0, decay_rate, adj_v0, adj_decay, n_observations, n_races, surface, distance_zone
 - `exotics`: pool (size only — NOT payoff, NOT winning_numbers)
 - `races`: total_wps_pool
+- **Market bias signals** (all point-in-time): trainer FTS/claim/drop/layoff/switch A/E, jockey career tier, jockey switch type, equipment changes, surface switch, class move
 
 ### FORBIDDEN before bet commitment:
 - `starters.finish_position`, `starters.wagering_position`, `starters.winner`
@@ -64,10 +75,21 @@ For each pool, compute:
 
 ## Step 3: Handicapping (Per Race)
 
-For each race, in order:
+For each race, compute the unified ratings table via `format_race_ratings()`:
+
+```
+Program  Horse         Rating  Market  Edge     Form   Confidence  Bias Factors
+3        Willy Pay     112     106     +6 (±3)  +4     HIGH        [jock_upgrade, claimed]
+7        Tinitus       105     108     -3 (±3)  -3     HIGH        []
+1        Gamblin Fever 106      98     +8 (±6)  +11    MOD         [blinkers_off, drop]
+```
+
+All values in rating points (1 pt = 58ms sprint / 77ms route ≈ 0.3-0.5 lengths).
+
+Then assess:
 
 ### A. Assess the favorite
-Using current form data (v0_trend, decay, n_recent_races, days_since_last), form a qualitative judgment about whether this favorite is likely to hold its position or is vulnerable to defeat.
+Using Edge (is the favorite overbet?), form data (v0_trend, decay), and context:
 
 **Inputs to the assessment:**
 - **Decay rate relative to field:** Is the favorite's decay above or below the field median? A favorite with decay 0.5+ above field median fades faster than competitors — vulnerable to contested pace.
@@ -164,7 +186,7 @@ Based on the qualitative favorite assessment and field depth:
 | **Moderate** (mixed signals, some concern) | Mix: fav in 2nd/3rd structures + some fav-excluded combos | Win bets on best alternate at value |
 | **Vulnerable** (declining, high decay, contested pace, overbet) | Primarily fav-excluded. Spread wide underneath. | Fav in 3rd at lighter weight as hedge |
 
-The key question per ITP: "Can I get the favorite completely off the board?" If yes — basket of bets excluding fav. If no — structure tickets assuming fav is in the frame somewhere.
+The key question: "Does the favorite have negative Edge?" If Edge < -3 (±band), the entire non-chalk field is structurally underlaid. If Edge is neutral/positive, the favorite deserves respect in ticket construction.
 
 ---
 
@@ -273,7 +295,7 @@ Day summary:
 
 ## Limitations of Retrospective Simulation
 
-- **No will-pays available.** In live betting, ITP checks exacta/trifecta will-pays to confirm where usage clusters before committing. In historical simulation, we can't observe real-time pool dynamics. We can only infer likely usage from odds structure (heavy favorite = likely over-used in gimmicks) and connections (leading trainer/jockey = higher public use than unknowns at same odds).
+- **No will-pays available.** In live betting, a sharp bettor checks exacta/trifecta will-pays to confirm where usage clusters before committing. In historical simulation, we can't observe real-time pool dynamics. We can only infer likely usage from odds structure (heavy favorite = likely over-used in gimmicks) and connections (leading trainer/jockey = higher public use than unknowns at same odds).
 - **Closing odds are the best available proxy for market consensus**, but in reality sharp money arrives late. Our "odds" column is the final tote price, which is sharper than what most bettors saw when they placed tickets.
 - **No carryover information.** We don't track whether pools had carryovers on the simulation date, which would alter optimal strategy (bet more, be less precise in plus-EV pools).
 
@@ -290,28 +312,37 @@ Day summary:
 
 ---
 
-## What AN1 Data Tells Us (Priors, Not Rules)
+## What the Research Provides (see `docs/research-findings.md`)
 
+### AN1 (Exotic Structure)
 | Finding | Use as |
 |---|---|
 | "Price on top, fav 2nd/3rd" = 15-21% overlay | Structure preference when P(fav top 3) is high |
-| "Fav excluded" = 25% underlay in aggregate | DO NOT avoid fav-excluded when model says fav is vulnerable |
-| Pick 3 has situational overlay with bad fav | Justification for horizontal play in those sequences |
-| Exacta overlay strongest with price over fav | Kill shot direction preference |
+| Exacta overlay strongest with price over fav | Directional preference in keying |
+| Pick 3 has structural equity vs parlayed wins | Justification for horizontal play |
 | Stern k=0.81 | Place/show correction for Harville fair values |
 
-These are the base rates. The model updates them with specific race information.
+### AN2 (Market Bias — feeds into Edge via bias_multiplier)
+| Signal | Relative A/E | Strongest when |
+|---|---|---|
+| Blinkers OFF | +9.3% | Market ignores equipment removal |
+| Off-turf favorite | +7.5% | Use fav in key positions, fade turf-only horses |
+| Synthetic → Turf switch | +6.0% | Form transfers better than market expects |
+| Jockey upgrade | +4.7% | Trainer specifically booked better rider |
+| Trainer claim (top trainers) | +15-30% | First 3 starts, trainer-specific |
+| First-time Lasix | +1.5% | Weak but consistent |
+| Jockey downgrade | -9.0% | Market still pricing old jockey's form |
+| First-time blinkers | -3.7% | Crowd overvalues visible change |
+| Turf → Dirt switch | -3.4% | Turf form doesn't carry |
 
----
-
-## What the Model (RKM + Current Form) Provides
-
+### Model (RKM + Current Form)
 | Signal | Meaning | Betting implication |
 |---|---|---|
-| Positive v0_trend | Horse is running faster recently than career average | Upgrade — use in win contention |
-| Negative v0_trend | Horse is slowing down | Downgrade — but don't eliminate from underneath if career v0 is elite |
-| Low/negative decay | Horse maintains speed over distance (stayer) | Advantage in routes; dangerous on the lead |
-| High decay | Horse fades | Vulnerable if pace is contested; may still flash speed early |
+| Positive v0_trend / high Edge | Running faster than career AND market underprices it | Core of ticket — key on top |
+| Negative v0_trend + short odds | Declining favorite | Negative Edge — spread against |
+| Low decay + high v0 | Sustained speed (stayer on the lead) | Dangerous; respect in ticket structure |
+| High career_v0, low current_v0 | Former class, currently below peak | Potential upside if placed right (class drop, equipment change) |
+| career_v0 - current_v0 > 2 + improving trend | Comeback in progress | Market may be slow to adjust — check Edge |
 | High adj_v0 | Raw speed ability | Could threaten at any time, especially in sprints |
 | Days since last > 180 | Long layoff | Uncertain — career curves valid but current form unknown |
 | n_recent_races = 0 | No recent form | Cannot compute v0_trend reliably; rely on career curve only |
