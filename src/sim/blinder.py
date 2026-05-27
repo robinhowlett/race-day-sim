@@ -66,8 +66,8 @@ WHERE r.track = %(track)s
   AND r.date = %(race_date)s
   AND e.pool IS NOT NULL
   AND e.bet_type IN (
-      'EXACTA', 'TRIFECTA', 'SUPERFECTA',
-      'PICK_3', 'PICK_4', 'PICK_5', 'PICK_6'
+      'EXACTA', 'TRIFECTA', 'SUPERFECTA', 'QUINELLA', 'HI_5',
+      'DAILY_DOUBLE', 'PICK_3', 'PICK_4', 'PICK_5', 'PICK_6'
   )
 ORDER BY r.number, e.bet_type
 """

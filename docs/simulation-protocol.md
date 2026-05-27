@@ -247,19 +247,44 @@ even though you survived. This is the "flashing stop sign" — remove C and go 2
 
 **For vertical exotics (exacta/trifecta/super):**
 
-Each combination has a projected payoff (from the AN1 payoff model or estimated from odds). Your cost per combo = total wager / combos. For each combo:
+Each combination in your ticket is a separate bet. It either hits or it doesn't. The question per combo: "is the expected return of THIS specific combination positive?"
 
 ```
-equity_ratio = projected_payoff × probability_of_hitting / cost_per_combo
+combo_equity = projected_payoff × probability_of_hitting / cost_per_combo
 ```
 
-- equity_ratio > 1.2: strong positive — include
-- equity_ratio 0.8-1.2: marginal — include only if it's the BACKBONE combo (your best opinion)
-- equity_ratio < 0.8: diluting the ticket — remove this combo
+- combo_equity > 1.5: strong — this combo drives the ticket's value
+- combo_equity 1.0-1.5: marginal — include only alongside strong combos
+- combo_equity < 1.0: this combo COSTS you expected value. It dilutes the ticket.
 
-In practice: a $1 trifecta with 20 combos costs $20. Each combo costs $1 effectively. A combo involving three 3/1 shots (projected payoff ~$60, probability ~2%) has equity = $60 × 0.02 / $1 = $1.20. Positive but thin. A combo with an 8/1 on top (projected ~$200, probability ~0.8%) has equity = $200 × 0.008 / $1 = $1.60. Better.
+**The practical math:**
 
-**Key insight:** Trifectas with ALL short prices in every position are low-equity plays. The best equity comes from having at least one longer-priced horse in the combination — the payoff leverage outweighs the lower probability.
+A $1 trifecta with 24 combos costs $24. Each combo costs $1.
+
+| Combo type | Projected payoff | Approx probability | Equity per $1 |
+|---|---|---|---|
+| 2/1 over 3/1 over 5/1 | ~$60 | ~3% | $1.80 ✓ |
+| 2/1 over 2/1 over 3/1 | ~$30 | ~5% | $1.50 ✓ |
+| 8/1 over 3/1 over 5/1 | ~$250 | ~0.8% | $2.00 ✓✓ |
+| 2/1 over 2/1 over 2/1 | ~$15 | ~8% | $1.20 marginal |
+| 8/1 over 15/1 over 20/1 | ~$5000 | ~0.01% | $0.50 ✗ |
+
+**The ticket's AVERAGE equity matters.** If your 24-combo ticket has:
+- 4 combos with equity > 2.0 (the high-payoff ones with a price on top)
+- 8 combos with equity 1.0-1.5 (solid mid-range)
+- 12 combos with equity < 0.8 (chalk-on-chalk fillers)
+
+...those 12 bad combos are dragging the average below breakeven. You'd be better with a 12-combo ticket (just the good combos) played for $2 each — same $24 total but double the payout when you hit.
+
+**ITP's principle applied:** "Kill shot" (price on top only) isn't arbitrary aggression — it's equity math. The combos with a longer-priced horse in the WIN position have higher payoffs that outweigh their lower probability. The combos with chalk-on-chalk have low payoffs that DON'T compensate for even their higher probability. Remove the low-equity combos and press the high-equity ones.
+
+**Before finalizing any vertical exotic ticket, scan each combo mentally:**
+1. What would this specific combination pay? (estimate from the horses' odds)
+2. How likely is this specific combination? (rough: multiply the individual probabilities from your model, discounted for order difficulty)
+3. Does payoff × probability > cost per combo?
+4. If most combos fail this test, your ticket structure is wrong — rebuild narrower with better combinations.
+
+**Practical heuristic:** If your trifecta has the favorite in EVERY position (top, 2nd, 3rd), examine those combos. A fav-on-top combo pays low. A fav-in-2nd combo pays moderately. A fav-in-3rd combo pays more. If you're including the fav in top position but your opinion is "beat the fav" — those combos contradict your thesis AND have low equity. Remove them.
 
 **Step E.5: Quantitative checks before commitment**
 
