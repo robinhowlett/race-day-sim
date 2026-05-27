@@ -520,20 +520,36 @@ def format_race_ratings(card: pd.DataFrame, bias_df: pd.DataFrame,
         else:
             edge_str = ""
 
+        # Determine display tier
+        if w >= 0.30:
+            tier = "RATED"
+        elif w > 0:
+            tier = "PARTIAL"
+        elif mult != 1.0:
+            tier = "SIGNAL"
+        else:
+            tier = "UNKNOWN"
+
         rows.append({
             "program": starter.get("program", ""),
             "horse": starter.get("horse_name", ""),
-            "rating": result["rating"],
-            "market": result["market_rating"],
-            "edge": result["edge"],
-            "edge_display": edge_str,
+            "rating": result["rating"] if tier == "RATED" else None,
+            "market": result["market_rating"] if tier == "RATED" else None,
+            "edge": result["edge"] if tier == "RATED" else None,
+            "edge_display": edge_str if tier == "RATED" else "",
             "band": band,
             "bias_mult": result["bias_mult"],
-            "form": round(float(starter.get("v0_trend", 0) or 0) / (MS_PER_POINT[zone] / 1000.0), 1),
+            "w_physics": round(w, 2),
+            "tier": tier,
+            "signal": edge_str if tier in ("SIGNAL", "PARTIAL") else "",
+            "form": round(float(starter.get("v0_trend", 0) or 0) / (MS_PER_POINT[zone] / 1000.0), 1) if w >= 0.30 else None,
             "odds": odds,
         })
 
     out = pd.DataFrame(rows)
     if not out.empty:
-        out = out.sort_values("edge", ascending=False, na_position="last")
+        # Sort rated horses by edge, then partial/signal horses by odds
+        rated = out[out["tier"] == "RATED"].sort_values("edge", ascending=False)
+        unrated = out[out["tier"] != "RATED"].sort_values("odds", ascending=True)
+        out = pd.concat([rated, unrated], ignore_index=True)
     return out
