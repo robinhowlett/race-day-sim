@@ -216,13 +216,58 @@ A horizontal is justified when:
 
 **If yes:** Construct the horizontal FIRST, then add verticals only in races where standalone value exists on top of the horizontal play.
 
-**Step E.4: Quantitative checks before commitment**
+**Step E.4: The Equity Test**
 
-For each bet, verify:
+Every combination in every ticket must pass the equity test before inclusion. This is the quantitative backbone of ticket construction.
+
+**For horizontal legs (Pick 3/4/5/6):**
+
+A horizontal ticket is a parlay with variables. Your per-combo cost = total ticket / number of combos. For EACH horse in EACH leg, ask: "if this horse wins this leg, did I gain or lose equity?"
+
+```
+Example: $120 Pick 3, using 3 × 2 × 2 = 12 combos. Per-combo cost = $10.
+
+Leg 1 (3 horses): A at 8/1, B at 5/1, C at 3/1
+  If A wins: surviving combos (4) are worth $10 × 9 = $90 each. You paid $120 for 4 × $90 = $360 value. GAINED.
+  If B wins: surviving combos (4) worth $10 × 6 = $60 each. $240 value for $120 cost. GAINED.
+  If C wins: surviving combos (4) worth $10 × 4 = $40 each. $160 value for $120 cost. GAINED (barely).
+
+All three gain equity. This leg is sound.
+
+Now imagine C is the 6/5 favorite:
+  If C wins: surviving combos (4) worth $10 × 2.2 = $22 each. $88 value for $120 cost. LOST EQUITY.
+
+Including C would mean that when C wins (which happens ~45% of the time), you're BEHIND
+even though you survived. This is the "flashing stop sign" — remove C and go 2-deep.
+```
+
+**The rule:** If a horse winning a leg would return LESS than your per-combo cost × (total combos / surviving combos), remove them. You'd rather die in that leg than survive at a loss.
+
+**The exception:** A leg where you have NO strong opinion and MUST include short prices to survive. In this case, that leg should be narrow (single or A/B with the two best-priced contenders), not wide. The horizontal's value comes from the OTHER legs where you have separation.
+
+**For vertical exotics (exacta/trifecta/super):**
+
+Each combination has a projected payoff (from the AN1 payoff model or estimated from odds). Your cost per combo = total wager / combos. For each combo:
+
+```
+equity_ratio = projected_payoff × probability_of_hitting / cost_per_combo
+```
+
+- equity_ratio > 1.2: strong positive — include
+- equity_ratio 0.8-1.2: marginal — include only if it's the BACKBONE combo (your best opinion)
+- equity_ratio < 0.8: diluting the ticket — remove this combo
+
+In practice: a $1 trifecta with 20 combos costs $20. Each combo costs $1 effectively. A combo involving three 3/1 shots (projected payoff ~$60, probability ~2%) has equity = $60 × 0.02 / $1 = $1.20. Positive but thin. A combo with an 8/1 on top (projected ~$200, probability ~0.8%) has equity = $200 × 0.008 / $1 = $1.60. Better.
+
+**Key insight:** Trifectas with ALL short prices in every position are low-equity plays. The best equity comes from having at least one longer-priced horse in the combination — the payoff leverage outweighs the lower probability.
+
+**Step E.5: Quantitative checks before commitment**
+
+After passing the equity test:
 - **Win bets:** Edge ± band entirely positive. Horse is 3/1+ (short-priced win bets have thin expected profit even with edge).
 - **Exacta key:** You have a top opinion AND a secondary opinion about 2nd place. Don't key just because you like one horse — that's a win bet you're complicating.
 - **Trifecta:** You have a bad favorite (spread ex-fav) OR you have a top pick AND some depth opinion. If you're putting 5 horses in every position, you don't have enough opinion to justify the combinations.
-- **Horizontal:** Every horse in every leg would GAIN equity if they won. Check: at their odds, does winning that leg return more than your per-combo cost? If not, remove them.
+- **Horizontal:** Every horse in every leg passes the equity test above. If any leg has 3+ horses that would LOSE equity if they won, restructure or pass.
 
 **Step E.5: Sizing the basket**
 
