@@ -286,6 +286,50 @@ A $1 trifecta with 24 combos costs $24. Each combo costs $1.
 
 **Practical heuristic:** If your trifecta has the favorite in EVERY position (top, 2nd, 3rd), examine those combos. A fav-on-top combo pays low. A fav-in-2nd combo pays moderately. A fav-in-3rd combo pays more. If you're including the fav in top position but your opinion is "beat the fav" — those combos contradict your thesis AND have low equity. Remove them.
 
+**The Press: Weighting Your Strongest Combinations**
+
+After the equity test removes low-value combos, redistribute that budget to your HIGHEST-conviction combinations by playing them at multiples of the base unit:
+
+```
+Example: Original ticket: 24 combos × $1 = $24
+
+After equity test: remove 8 low-equity combos → 16 combos remain
+
+Among those 16:
+  - 4 combos represent your STRONGEST opinion (best horse on top, best secondary picks behind)
+  - 12 combos represent your SPREAD coverage (backup scenarios)
+
+Press the 4 best: play them at $3 each.
+Keep the 12 spread at $1 each.
+Total: (4 × $3) + (12 × $1) = $24 — same total investment.
+
+But when your best opinion hits:
+  - Without press: $1 combo wins, you collect the payoff once
+  - With press: $3 combo wins, you collect 3× the payoff
+```
+
+**When to press:**
+- You've already created a hurdle (a narrow opinion that cuts combinations). The hurdle creates separation. The press maximizes the reward when the hurdle clears.
+- Your strongest combo has equity_ratio > 2.0 while your spread combos are 1.0-1.5. Weight toward the high-equity combos.
+- In a basket with a win bet + exacta + trifecta: the win bet IS a press on your top opinion. If your $20 win bet AND your $3 trifecta both hit, you cash twice on the same opinion at different multipliers.
+
+**When NOT to press:**
+- You can't meaningfully separate your combos by conviction (they're all roughly equal). Pressing randomly just adds variance without edge.
+- The pressed combos involve very long prices where variance is already extreme. A $5 combo on a 30/1-15/1-20/1 tri doesn't need pressing — the payoff is already enormous if it hits.
+
+**The basket structure (ITP's layered press):**
+
+When your strongest opinion is a specific horse at a price (say an 8/1 with Edge +15):
+
+| Layer | Bet | Amount | Purpose |
+|---|---|---|---|
+| 1. Win | 8/1 horse to win | $30-50 | Purest expression, highest conviction |
+| 2. Exacta key | 8/1 on top over 3-4 underneath | $10 each = $30-40 | Extends into higher-paying pool |
+| 3. Trifecta pressed | 8/1 on top, best secondary in 2nd, spread 3rd | $3-5 per combo | Your strongest exotic structure |
+| 4. Trifecta cover | 8/1 in 2nd or 3rd (in case right horse wrong position) | $1 per combo | Safety net at base unit |
+
+Layer 1 is the press on the opinion itself. Layer 2 presses it into an exotic. Layer 3 presses within the exotic. Layer 4 covers at minimum. The total basket might be $120-150 on one race — but it's ALL expressing the same core opinion at different multipliers. If the 8/1 wins, you cash layers 1 + 2 + 3. If the 8/1 runs 2nd, you cash layer 4. If the 8/1 misses entirely, you lose the basket — that's the hurdle.
+
 **Step E.5: Quantitative checks before commitment**
 
 After passing the equity test:
