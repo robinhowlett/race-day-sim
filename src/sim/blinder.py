@@ -24,14 +24,16 @@ SELECT
     s.trainer_first || ' ' || s.trainer_last AS trainer,
     s.odds         AS closing_odds,
     s.choice,
-    -- RKM velocity curve (career)
+    -- RKM velocity curve (career, only if first_race precedes sim date)
     vc.v0,
     vc.decay_rate,
     vc.adj_v0,
     vc.adj_decay,
     vc.n_races     AS curve_races,
     vc.n_observations,
-    -- Current form (entering this race)
+    vc.first_race  AS curve_first_race,
+    vc.last_race   AS curve_last_race,
+    -- Current form (entering this race — point-in-time safe)
     cf.current_v0,
     cf.current_decay,
     cf.career_v0,
@@ -45,6 +47,7 @@ LEFT JOIN handycapper.rkm_velocity_curves vc
     ON SPLIT_PART(vc.horse_key, '|', 1) = s.horse
     AND vc.surface = r.surface
     AND vc.distance_zone = CASE WHEN r.furlongs > 6.5 THEN 'route' ELSE 'sprint' END
+    AND vc.first_race < %(race_date)s
 LEFT JOIN handycapper.rkm_current_form cf
     ON cf.starter_id = s.id
 WHERE r.track = %(track)s

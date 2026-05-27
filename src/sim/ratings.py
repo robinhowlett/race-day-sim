@@ -342,20 +342,46 @@ def format_race_ratings(card: pd.DataFrame, bias_df: pd.DataFrame,
 
     race_bias = bias_df[bias_df["race_number"] == race_number] if bias_df is not None else None
 
-    # Pre-compute all ratings for field_ratings context
-    # Use current_v0/current_decay (time-weighted recent form) when available,
-    # fall back to career adj_v0/adj_decay
+    # Pre-compute all ratings using confidence-weighted blending:
+    # - current_form (point-in-time safe) is the primary physics source
+    # - adj_v0 from career curve is fallback (with first_race filter for leakage safety)
+    # - w_physics = 1 - exp(-n_recent / 5): how much to trust the curve
+    # - When w_physics is low, the rating carries a wide band (expressed in output)
     all_ratings = []
+    all_w_physics = []
     for _, starter in race.iterrows():
-        v0 = starter.get("current_v0") if pd.notna(starter.get("current_v0")) else starter.get("adj_v0")
-        decay = starter.get("current_decay") if pd.notna(starter.get("current_decay")) else starter.get("adj_decay")
-        if pd.notna(v0) and pd.notna(decay):
+        # Determine physics source and confidence
+        has_current = pd.notna(starter.get("current_v0"))
+        has_career = pd.notna(starter.get("adj_v0"))
+        n_recent = int(starter.get("n_recent_races") or 0) if has_current else 0
+        curve_races = int(starter.get("curve_races") or 0) if has_career else 0
+
+        if has_current:
+            v0 = float(starter["current_v0"])
+            decay = float(starter["current_decay"])
+            # w_physics from recent race count (current_form is time-weighted,
+            # so n_recent reflects how much recent data backs it)
+            w = 1.0 - np.exp(-n_recent / 5.0)
+        elif has_career:
+            v0 = float(starter["adj_v0"])
+            decay = float(starter["adj_decay"])
+            # Career curve (filtered by first_race < race_date) — less reliable
+            # but at least the horse has SOME history in this zone
+            w = 1.0 - np.exp(-curve_races / 8.0)  # slower ramp (career is noisier)
+            w *= 0.7  # discount for using career instead of current form
+        else:
+            v0 = None
+            decay = None
+            w = 0.0
+
+        if v0 is not None and decay is not None:
             all_ratings.append(compute_rating(
-                float(v0), float(decay), distance_ft, zone,
+                v0, decay, distance_ft, zone,
                 surface=surface, furlongs=furlongs
             ))
         else:
             all_ratings.append(np.nan)
+        all_w_physics.append(w)
 
     rows = []
     for i, (_, starter) in enumerate(race.iterrows()):
@@ -385,17 +411,19 @@ def format_race_ratings(card: pd.DataFrame, bias_df: pd.DataFrame,
                 "bias_pts": 0.0,
             }
 
-        # Confidence band (± rating points)
-        # Based on sample size: fewer races = wider band
-        n_races = starter.get("curve_races", 0) or 0
-        if n_races >= 15:
+        # Confidence band (± rating points) from w_physics
+        # Higher w_physics = tighter band (more data = more trust)
+        w = all_w_physics[i]
+        if w >= 0.85:
             band = 3
-        elif n_races >= 8:
+        elif w >= 0.60:
             band = 6
-        elif n_races >= 3:
+        elif w >= 0.30:
             band = 10
+        elif w > 0:
+            band = 15
         else:
-            band = None  # insufficient — can't rate
+            band = None  # no physics data at all
 
         # Format edge with band
         if result["edge"] is not None and band is not None:
