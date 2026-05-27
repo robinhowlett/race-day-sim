@@ -7,9 +7,86 @@ Anchor: 100 = CLM $5K-$10K, open/male, 4yo+, non-state-bred, Fast dirt winner.
 import numpy as np
 import pandas as pd
 
-ANCHOR_TIME_MS = {"sprint": 71577.0, "route": 99192.0}
+# Canonical winner curve params by distance and surface.
+# Dirt/Synthetic: CLM $5K-$10K winners → these produce rating 100.
+# Turf: CLM $10K-$25K winners → these produce rating 112 (turf canonical class is higher,
+#   because $5K-$10K claiming barely exists on turf. $10K-$25K turf ≈ rating 112 on the
+#   universal scale derived from dirt class ladder analysis).
+_CANONICAL_PARAMS = {
+    # (surface, furlongs): (adj_v0, adj_decay, anchor_rating)
+    # Dirt CLM $5K-$10K → rating 100
+    ("Dirt", 4.5): (65.475, 4.3711, 100.0),
+    ("Dirt", 5.0): (65.962, 4.5886, 100.0),
+    ("Dirt", 5.5): (65.519, 4.2354, 100.0),
+    ("Dirt", 6.0): (64.805, 3.8911, 100.0),
+    ("Dirt", 6.5): (65.021, 3.9763, 100.0),
+    ("Dirt", 7.0): (61.945, 2.7248, 100.0),
+    ("Dirt", 8.0): (60.525, 2.2537, 100.0),
+    ("Dirt", 8.32): (60.262, 2.1625, 100.0),
+    ("Dirt", 8.5): (60.117, 2.0951, 100.0),
+    ("Dirt", 9.0): (59.841, 2.0040, 100.0),
+    # Synthetic CLM $5K-$10K → rating 100
+    ("Synthetic", 5.5): (63.637, 3.5354, 100.0),
+    ("Synthetic", 6.0): (63.412, 3.3545, 100.0),
+    ("Synthetic", 6.5): (64.216, 3.5776, 100.0),
+    ("Synthetic", 8.0): (58.897, 1.7607, 100.0),
+    ("Synthetic", 8.5): (57.936, 1.4602, 100.0),
+    # Turf CLM $10K-$25K → rating 112 (universal scale)
+    ("Turf", 5.0): (63.005, 2.3976, 112.0),
+    ("Turf", 5.5): (61.747, 1.8380, 112.0),
+    ("Turf", 6.5): (61.875, 1.4819, 112.0),
+    ("Turf", 7.0): (59.387, 1.2171, 112.0),
+    ("Turf", 7.5): (57.052, 0.7335, 112.0),
+    ("Turf", 8.0): (56.178, 0.4995, 112.0),
+    ("Turf", 8.5): (55.910, 0.3645, 112.0),
+    ("Turf", 9.0): (55.543, 0.2271, 112.0),
+}
+
 MS_PER_POINT = {"sprint": 58.0, "route": 77.0}
 TEMPERATURE = 6500.0
+
+
+def _get_anchor(surface: str, furlongs: float) -> tuple[float, float]:
+    """Get the formula-projected anchor time and its rating value for this distance/surface.
+
+    Returns (anchor_time_ms, anchor_rating). For dirt, anchor_rating=100.
+    For turf, anchor_rating=112 (turf canonical class is higher).
+
+    Interpolates between known canonical distances if exact match unavailable.
+    """
+    distance_ft = furlongs * 660.0
+    key = (surface, furlongs)
+    if key in _CANONICAL_PARAMS:
+        v0, decay, rating = _CANONICAL_PARAMS[key]
+        avg_v = v0 - decay * (distance_ft / 2000.0)
+        return distance_ft / avg_v * 1000.0, rating
+
+    # Interpolate: find two nearest distances on this surface
+    surface_keys = sorted([(f, v0, d, r) for (s, f), (v0, d, r) in _CANONICAL_PARAMS.items() if s == surface])
+    if not surface_keys:
+        surface_keys = sorted([(f, v0, d, r) for (s, f), (v0, d, r) in _CANONICAL_PARAMS.items() if s == "Dirt"])
+
+    if furlongs <= surface_keys[0][0]:
+        f, v0, decay, rating = surface_keys[0]
+        avg_v = v0 - decay * (distance_ft / 2000.0)
+        return distance_ft / max(avg_v, 30.0) * 1000.0, rating
+    if furlongs >= surface_keys[-1][0]:
+        f, v0, decay, rating = surface_keys[-1]
+        avg_v = v0 - decay * (distance_ft / 2000.0)
+        return distance_ft / max(avg_v, 30.0) * 1000.0, rating
+
+    for i in range(len(surface_keys) - 1):
+        f_lo, v0_lo, d_lo, r_lo = surface_keys[i]
+        f_hi, v0_hi, d_hi, r_hi = surface_keys[i + 1]
+        if f_lo <= furlongs <= f_hi:
+            t = (furlongs - f_lo) / (f_hi - f_lo)
+            v0 = v0_lo + t * (v0_hi - v0_lo)
+            decay = d_lo + t * (d_hi - d_lo)
+            rating = r_lo + t * (r_hi - r_lo)
+            avg_v = v0 - decay * (distance_ft / 2000.0)
+            return distance_ft / max(avg_v, 30.0) * 1000.0, rating
+
+    return 70000.0, 100.0
 
 # Relative A/E baselines (population A/E ≈ 0.80 for dirt/fast)
 BASELINE_AE = 0.800
@@ -24,16 +101,19 @@ def projected_time_ms(adj_v0: float, decay_rate: float, distance_ft: float) -> f
 
 
 def compute_rating(adj_v0: float, decay_rate: float, distance_ft: float,
-                   zone: str = "route") -> float:
+                   zone: str = "route", surface: str = "Dirt",
+                   furlongs: float | None = None) -> float:
     """Convert velocity curve to rating points.
 
-    Returns rating where 100 = canonical race anchor time.
+    Returns rating where 100 = canonical race winner at this distance/surface.
     Faster = higher rating.
     """
     time_ms = projected_time_ms(adj_v0, decay_rate, distance_ft)
-    anchor = ANCHOR_TIME_MS[zone]
+    if furlongs is None:
+        furlongs = distance_ft / 660.0
+    anchor_time, anchor_rating = _get_anchor(surface, furlongs)
     ms_per_pt = MS_PER_POINT[zone]
-    return 100.0 + (anchor - time_ms) / ms_per_pt
+    return anchor_rating + (anchor_time - time_ms) / ms_per_pt
 
 
 def compute_ratings_for_field(card: pd.DataFrame, race_number: int) -> pd.Series:
@@ -254,8 +334,10 @@ def format_race_ratings(card: pd.DataFrame, bias_df: pd.DataFrame,
     Returns DataFrame with columns: horse, rating, market, edge, bias_factors, confidence
     """
     race = card[card["race_number"] == race_number].copy()
-    zone = "sprint" if race["furlongs"].iloc[0] <= 6.5 else "route"
-    distance_ft = float(race["furlongs"].iloc[0]) * 660.0
+    furlongs = float(race["furlongs"].iloc[0])
+    surface = str(race["surface"].iloc[0])
+    zone = "sprint" if furlongs <= 6.5 else "route"
+    distance_ft = furlongs * 660.0
     field_odds = race["closing_odds"].dropna().tolist()
 
     race_bias = bias_df[bias_df["race_number"] == race_number] if bias_df is not None else None
@@ -264,7 +346,10 @@ def format_race_ratings(card: pd.DataFrame, bias_df: pd.DataFrame,
     all_ratings = []
     for _, starter in race.iterrows():
         if pd.notna(starter.get("adj_v0")) and pd.notna(starter.get("adj_decay")):
-            all_ratings.append(compute_rating(starter["adj_v0"], starter["adj_decay"], distance_ft, zone))
+            all_ratings.append(compute_rating(
+                starter["adj_v0"], starter["adj_decay"], distance_ft, zone,
+                surface=surface, furlongs=furlongs
+            ))
         else:
             all_ratings.append(np.nan)
 
