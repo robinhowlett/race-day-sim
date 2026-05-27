@@ -91,6 +91,57 @@ def _get_anchor(surface: str, furlongs: float) -> tuple[float, float]:
 # Relative A/E baselines (population A/E ≈ 0.80 for dirt/fast)
 BASELINE_AE = 0.800
 
+# Class-level implied ratings (from research Item 1 class ladder)
+# Maps race type to approximate expected winner rating
+_CLASS_RATINGS = {
+    "MAIDEN CLAIMING": 84,
+    "MAIDEN SPECIAL WEIGHT": 92,
+    "CLAIMING": 100,  # generic — refined by purse below
+    "STARTER ALLOWANCE": 105,
+    "ALLOWANCE": 114,
+    "ALLOWANCE OPTIONAL CLAIMING": 118,
+    "STAKES": 130,
+}
+
+
+def compute_prior_rating(race_type: str, purse: float, surface: str,
+                         bias_mult: float = 1.0) -> float:
+    """Compute prior rating from race class + bias signals.
+
+    For horses without physics data, this is their entire rating.
+    For horses with partial data, this blends with the physics rating.
+
+    The prior represents: "what rating would a typical CONTENDER in this race have?"
+    Not the winner — the mid-field horse who belongs at this level.
+    """
+    # Base from race type
+    base = _CLASS_RATINGS.get(race_type, 100)
+
+    # Refine claiming races by purse (rough proxy for claiming price tier)
+    if "CLAIMING" in (race_type or "") and "MAIDEN" not in (race_type or ""):
+        if purse and purse > 0:
+            if purse <= 8000:
+                base = 90
+            elif purse <= 15000:
+                base = 97
+            elif purse <= 25000:
+                base = 105
+            elif purse <= 40000:
+                base = 112
+            else:
+                base = 118
+
+    # Turf offset (turf races are generally higher class)
+    if surface == "Turf":
+        base += 5
+
+    # Bias adjustment (trainer/jockey signals shift the prior)
+    if bias_mult != 1.0 and bias_mult > 0:
+        bias_pts = np.log(bias_mult) * 20.0
+        base += bias_pts
+
+    return base
+
 
 def projected_time_ms(adj_v0: float, decay_rate: float, distance_ft: float) -> float:
     """Project finishing time in milliseconds from curve parameters."""
@@ -383,10 +434,15 @@ def format_race_ratings(card: pd.DataFrame, bias_df: pd.DataFrame,
             all_ratings.append(np.nan)
         all_w_physics.append(w)
 
+    # Get race-level info for prior computation
+    race_type = str(race["race_type"].iloc[0]) if "race_type" in race.columns else "CLAIMING"
+    race_purse = float(race["purse"].iloc[0]) if "purse" in race.columns and pd.notna(race["purse"].iloc[0]) else 0
+
     rows = []
     for i, (_, starter) in enumerate(race.iterrows()):
         sid = starter["starter_id"]
-        rating = all_ratings[i]
+        physics_rating = all_ratings[i]
+        w = all_w_physics[i]
 
         # Bias multiplier
         bias_row = None
@@ -397,10 +453,31 @@ def format_race_ratings(card: pd.DataFrame, bias_df: pd.DataFrame,
 
         mult = bias_multiplier(bias_row) if bias_row is not None else 1.0
 
+        # Compute blended rating: w × physics + (1-w) × prior
+        prior = compute_prior_rating(race_type, race_purse, surface, mult)
+
+        if not np.isnan(physics_rating) and w > 0:
+            # Blend physics and prior
+            rating = w * physics_rating + (1.0 - w) * prior
+        elif w == 0 and mult != 1.0:
+            # No physics but bias signals exist — use prior as the rating
+            rating = prior
+        else:
+            rating = np.nan
+
         # Edge (pass field_ratings for calibrated market rating)
+        # Use blended ratings for field context
         odds = starter.get("closing_odds", np.nan)
+        blended_field = [
+            (all_w_physics[j] * all_ratings[j] + (1.0 - all_w_physics[j]) *
+             compute_prior_rating(race_type, race_purse, surface, 1.0))
+            if not np.isnan(all_ratings[j]) and all_w_physics[j] > 0
+            else compute_prior_rating(race_type, race_purse, surface, 1.0)
+            for j in range(len(all_ratings))
+        ]
+
         if not np.isnan(rating) and not np.isnan(odds) and odds > 0:
-            result = compute_edge(rating, odds, field_odds, mult, zone, all_ratings)
+            result = compute_edge(rating, odds, field_odds, mult, zone, blended_field)
         else:
             result = {
                 "rating": round(rating, 1) if not np.isnan(rating) else None,
@@ -430,6 +507,16 @@ def format_race_ratings(card: pd.DataFrame, bias_df: pd.DataFrame,
             edge_str = f"{result['edge']:+.0f} (±{band})"
         elif result["edge"] is not None:
             edge_str = f"{result['edge']:+.0f}"
+        elif w == 0 and mult != 1.0:
+            # Prior-only horse: show trainer signal strength instead of edge
+            if mult >= 1.5:
+                edge_str = "STRONG trainer"
+            elif mult >= 1.2:
+                edge_str = "positive trainer"
+            elif mult <= 0.7:
+                edge_str = "negative trainer"
+            else:
+                edge_str = "prior only"
         else:
             edge_str = ""
 
