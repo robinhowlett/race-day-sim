@@ -53,18 +53,35 @@ For each horse in a race:
 
 ```
 base_rating     = from velocity curves (adj_v0 + decay → projected time → points)
-bias_adjustment = sum of applicable group-level point adjustments
-adjusted_rating = base_rating + bias_adjustment
-market_rating   = odds-implied rating (what rating produces this horse's market probability)
-edge            = adjusted_rating - market_rating (±confidence band)
+bias_multiplier = product of applicable relative A/E factors
+adjusted_prob   = model_probability × bias_multiplier
+market_prob     = odds-implied probability
+edge            = prob_to_rating(adjusted_prob) - prob_to_rating(market_prob)  (±confidence band)
 ```
 
 **Positive edge** = model thinks the horse is better than the market says.
 **Negative edge** = model thinks the horse is worse than the market says (overbet).
 
+### Combining group biases: multiplicative
+
+Group-level A/E factors combine as a **product of ratios**, not a sum. Each factor independently scales the probability:
+
+```
+bias_multiplier = (relative_ae_factor1) × (relative_ae_factor2) × ...
+```
+
+Where `relative_ae` = factor's A/E / population baseline A/E (normalizing out the takeout). For example:
+- Jockey upgrade: relative A/E = 0.841 / 0.800 = 1.051
+- Claimed by top trainer: relative A/E = 1.157 / 0.800 = 1.446
+- Blinkers off: relative A/E = 0.881 / 0.800 = 1.101
+
+Combined: 1.051 × 1.446 × 1.101 = 1.673 (the model adjusts this horse's win probability up by 67%).
+
+Multiplicative is the correct default when factors are independent (each independently scales the probability). If factors are correlated (e.g., claim trainers always upgrade jockeys), the product overstates — this is an acknowledged limitation pending empirical calibration of interaction terms.
+
 The confidence band combines:
 - Rating uncertainty from curve fit (sample size, residual variance)
-- Group bias significance (Archie test — is the A/E deviation real or noise?)
+- Group bias significance (Archie test — if a factor has Archie < 3.0, its multiplier is shrunk toward 1.0 rather than applied at full strength)
 
 ---
 
