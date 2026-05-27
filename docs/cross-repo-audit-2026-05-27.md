@@ -910,6 +910,200 @@ Without phases 1 and 3, anything that goes into chart-parser is guesswork dresse
 
 ---
 
+## Tier 8: race-replay
+
+race-replay is a visualization tool (not a model/calibration system). Some "issues" might be acceptable design choices for a UI tool, but several affect data accuracy and user trust. No CLAUDE.md exists; design.md is significantly stale relative to README and current code.
+
+### RR-T8.1 — POC `feet` exact-match silently breaks 9f+ races
+
+**File:** `server.js:332-341, 373-378`
+
+Win-prob endpoint maps POC rows to call points via `parseInt(row.feet) === callFeet`. For 2-lap races (1¼ mile / 9f+ on a 1m track), POC `feet` resets per call and may not match `callFeet` exactly due to importer rounding inconsistencies. Horses fall through to the `-6.0` logit DNF penalty path. The replay reader (`replay.js:382-385`) maps by integer `point` instead, which is more robust — there's an inconsistency between the two readers.
+
+**Verification:** Pick a 1¼m race, query its POC rows. Compare `feet` values to the call grid the win-prob endpoint generates. If any horse is missing a row at any expected `feet`, win-prob will spike to ~0% and back as the SVG progresses.
+
+**Fix:** Use `point` (the integer call number) consistently across both endpoints, OR add a tolerance to the `feet` match.
+
+**Severity:** HIGH
+
+### RR-T8.2 — `parseLateral` mis-attribution and missing word boundaries
+
+**File:** `replay.js:218-271`
+
+Multiple bugs in footnote-to-horse attribution:
+1. **Substring matching without `\b`:** `up.includes(upper)` matches `BISHOP` inside `BISHOPRIC`. Longest-first sort (L262) helps but doesn't solve cases where the longer name isn't in the field.
+2. **Single attribution per sentence:** "BAYERN and SHARED BELIEF battled to the wire" — only one horse gets the sentence (the `break;` at L264). Both horses' lateral hints should be derived.
+3. **Sentence splitting on `\.\s+` doesn't account for periods in titles** (`MR. PROSPECTOR`).
+4. **"rail" pattern over-triggers:** "off the rail" / "well off the rail" both incorrectly trigger an INSIDE hint (L243).
+5. **Apostrophe handling in legend regex** (`replay.js:919`) — apostrophes aren't in the regex-escape character class, so `BISHOP'S WIFE` colors only on `BISHOP`.
+
+**Verification:** Pick races with closely-named horses (e.g., one whose name is a substring of another, names with apostrophes, sentences that mention multiple horses). Check the replay's lane offsets visually against the actual footnote.
+
+**Fix:**
+- Use `\b` word-boundary matching in `buildLateralHints` (`replay.js:262-264`)
+- Loop through ALL horse name matches in a sentence rather than `break;` after first
+- Refine "rail" pattern to require it's not preceded by "off the" / "well off"
+- Improve sentence splitting to handle abbreviation periods
+- Properly escape apostrophes in the legend regex
+
+**Severity:** HIGH (affects every race with a footnote — visualization shows the wrong horse going wide)
+
+### RR-T8.3 — Trip-quality thresholds are uniform across distance/surface
+
+**File:** `server.js:417-453`
+
+`earlyZ` and `lateZ` thresholds (e.g., Pace Collapse needs `earlyZ > 0.8 AND lateZ < -0.5`) are applied uniformly. A 0.8 fps SD difference at the 1/4 of a sprint is a much bigger relative effect than at the 1/4 of a 1¼m route. Labels skew sprint-heavy.
+
+Additional `else if` ordering quirks: `Even Pace` (L435) catches `earlyZ=-1.0, lateZ=-1.0` even though Outclassed semantics fit better — Outclassed wins by ordering, but the order-dependence makes the rules brittle.
+
+`earlyZ`/`lateZ` derived from first/last splits without normalization to actual race phase — for routes with some splits filtered out, `earlyZ` might be the 3/4 split.
+
+**Verification:** Run the trip-quality classifier across the dataset, inspect distribution of labels by distance bucket. If sprint races have substantially more "extreme" labels (Pace Collapse, Dominant) than routes, the thresholds need normalization.
+
+**Fix:** Compute thresholds dynamically based on the section's typical fps SD by distance × surface. Or convert to percentile-based thresholds (e.g., earlyZ in top 20% of sprint distribution → fast early pace).
+
+**Severity:** HIGH (user-visible labels influence handicapping interpretation)
+
+### RR-T8.4 — "Live" win probability is a misnomer (uses post-race position data)
+
+**Files:** `server.js:363-371, 386-391`; README.md:13, 207; `app.js:522`
+
+The win-prob model reads `tot_len_bhd` at every call point. That's chart-derived post-race data. The model is a REPLAY (showing how a chart-aware observer would update beliefs given known position at each call), not a predictive model. README copy and the UI panel title both say "live" — misleading.
+
+**Verification:** Code review confirms.
+
+**Fix:** Rename the panel and README copy to "Replay win probability" or "Probability evolution by call." Document explicitly that this uses position observations from the chart (post-race).
+
+**Severity:** HIGH (user trust — implies predictive capability that doesn't exist)
+
+### RR-T8.5 — Scratched horses pollute win-prob endpoint
+
+**File:** `server.js:255-265`
+
+Win-prob query selects all `starters` for the race. Scratches are stored separately in `handycapper.scratches` (joined only by horse name) but not used to filter the starters list. Scratched horses with no POC rows get `-6.0` logit penalty at every call, appearing on the SVG at ~0% (visual clutter) and in trip-quality cards as `Normal` with no z-bars.
+
+**Verification:** Find a race with a scratch. Inspect the win-prob endpoint output. Confirm the scratched horse appears.
+
+**Fix:** Filter scratched horses before processing. Match by name (with disambiguation if duplicate names — though `scratches.horse` is just a name field).
+
+**Severity:** MEDIUM
+
+### RR-T8.6 — `loadPar` doesn't cache empty results
+
+**File:** `server.js:170-224`
+
+When a track/furlongs/surface/condition combo has no historical par data and no within-race fallback, the function returns an empty Map but doesn't cache it for the original key. Subsequent requests re-run the expensive query against `indiv_splits ⋈ starters ⋈ races`.
+
+**Verification:** Hit the same condition-specific race repeatedly, observe DB query count.
+
+**Fix:** Always cache the result for the requested key, including empty Maps.
+
+**Severity:** MEDIUM (performance — busy track with many race-detail loads is impacted)
+
+### RR-T8.7 — Front-end race tab race condition
+
+**File:** `app.js:140-159`
+
+`loadRace` fires two parallel fetches and awaits both. If the user clicks a different race tab while the first is in flight, the older request can resolve and overwrite `currentRaceData` and append to `chartArea`. No `currentRaceId` re-check after the await.
+
+**Verification:** Click rapidly between race tabs while a slow connection is loading the first.
+
+**Fix:** Capture `raceId` at function entry, compare to `currentRaceId` after the await, return early if they differ.
+
+**Severity:** MEDIUM (rapid tab clicking shows wrong race)
+
+### RR-T8.8 — Date range hard-coded to 2000-2017 in `loadPar`, undocumented
+
+**File:** `server.js:199-200`
+
+```sql
+AND r.date >= '2000-01-01'
+AND r.date <  '2017-01-01'
+```
+
+Per `notes/2026-04-11.md` this is by design (training/holdout split). But:
+- Not documented in README
+- Races from 2017+ get pace z-scores against pre-2017 par (silently fine)
+- Tracks that didn't exist before 2017 get within-race fallback (z-scores collapse to ~0)
+
+**Fix:** Document in README. Consider extending the par window now that 1991-2017 is the standard data range across the ecosystem.
+
+**Severity:** MEDIUM
+
+### RR-T8.9 — Coupled entries: `entry`/`entry_program` columns ignored
+
+**File:** `server.js:97-107`
+
+The starters query never reads `entry` or `entry_program`. Coupled entries appear as separate horses in the chart UI (correct for chart fidelity) but if `odds = NULL` on the second coupled horse, the `meanP` fallback at L325-329 silently inflates that horse's prior.
+
+**Verification:** Find a race with coupled entries. Check whether both rows have odds populated. Inspect the win-prob output for the coupled entry.
+
+**Fix:** When odds are NULL on a coupled entry, copy from the primary entry (same betting interest).
+
+**Severity:** MEDIUM
+
+### RR-T8.10 — `start_comments` regex misses common gate-trouble phrases
+
+**File:** `server.js:317`
+
+```js
+const gateRe = /slow\s*start|bobbled|bumped|squeez|stumbl|reared|fractious|dwelt/i;
+```
+
+Misses: "broke awkwardly", "left at the start", "reluctant to load", "hopped", "slammed". False-negative on gate trouble.
+
+**Fix:** Extend regex. (This is the same kind of vocabulary issue Tier 7 calls out for trip classification — DB analysis would surface the right vocabulary.)
+
+**Severity:** LOW
+
+### RR-T8.11 — `docs/design.md` is significantly stale
+
+**File:** `docs/design.md`
+
+- L344-388: claims credentials are hardcoded in server.js — moved to env vars
+- L405: "PostgreSQL Server (direct TCP connection on localhost:5432)" — ignores .env-driven port (5433 default for Docker)
+- L412: claims "Input: PostgreSQL database dump format" — there's no pg_dump in the project
+- L113-115: lists only 2 race indexes; schema.sql creates 35+
+- L156-167: describes points_of_call columns but omits `len_ahead_text`, `tot_len_bhd_text`
+- L12 vs README: "PostgreSQL 11+" vs "12+"
+
+**Fix:** Either delete design.md or rewrite from scratch. README is canonical.
+
+**Severity:** LOW (but actively misinforms readers)
+
+### RR-T8.12 — Other LOW findings (consolidated)
+
+- **Apostrophe regex escape** in legend (L919) — names with apostrophes color partially
+- **Replay frame interpolation** (L491-493) — `df < -0.3` wrap heuristic has minor edge cases
+- **`replayRaceFeet`** derived only from fractionals (L328-330) — falls back to 1-mile if race has no fractionals; should use `races.feet`
+- **Canvas re-context per frame** — `canvas.getContext('2d')` called inside drawFrame loop; cache once
+- **`parCache` unbounded** — bounded in practice (~33K max keys) but no LRU eviction
+- **CI only syntax-checks `server.js`** — public/*.js files not checked
+- **No CLAUDE.md** for race-replay (other repos have one)
+
+### RR-T8.13 — What's CORRECT in race-replay
+
+- Credentials properly moved to env vars
+- No N+1 SQL — uses `starter_id = ANY($1)` batching
+- `softmaxProbs` is numerically stable (subtracts max before exp)
+- Z-score clamping at ±4 prevents outlier dominance
+- Within-race par fallback for low-data sections
+- Track geometry math in replay.js well-commented
+- All README screenshot references exist
+- Joins use `starter_id` (not horse name) — avoids the cross-repo "join on name" trap
+
+### RR-T8 — Recommended priorities
+
+1. **RR-T8.4** (rename "live" → "replay") — pure copy fix, high user-trust impact
+2. **RR-T8.2** (parseLateral fixes) — affects every race's replay accuracy
+3. **RR-T8.1** (POC feet match) — silently breaks 9f+ races
+4. **RR-T8.3** (trip-quality thresholds) — user-visible labels systematically biased
+5. **RR-T8.5** (scratched horses) — visible artifacts on ~5-10% of races
+6. **RR-T8.7** (tab race condition) — easy fix, easy reproduction
+7. **RR-T8.11** (design.md staleness) — delete or rewrite
+
+---
+
 ## Coverage notes
 
 This audit covered code logic, statistical calibration, pre-race firewall integrity, and protocol/code alignment. NOT covered:
