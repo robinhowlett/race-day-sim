@@ -246,73 +246,6 @@ leg_prob = sum(1.0/(s.odds+1) for s in selections) / field_overround
 
 ---
 
-## What's NOT a problem (verified during audit)
-
-- Linear deceleration model is empirically defensible
-- Huber reweighting in curves.py is standard
-- WCMI computation is mathematically correct
-- The point-in-time CTEs in `load_market_bias` are properly date-bounded (no new leaks beyond known curve issue)
-- Most class-rating multipliers in `bias_multiplier` are correctly derived from research (1.022 first-Lasix, 1.101 blinkers-off, 0.970 first-blinkers, 0.961 class-rise, 1.029 class-drop all check out)
-- Identity disambiguation logic is mostly right (small leap-year edge case)
-- The previously-known `odds_to_rating` rank-mapping issue is documented in `edge-calibration-issue.md`
-
----
-
-## Verification & Remediation Plan
-
-When robinpc DB access is restored:
-
-### Phase A: Verify Tier 1 findings (DB queries, no code changes yet)
-
-1. **RKM-T1.1:** Query `rkm_track_offsets` distribution. Count distinct tracks per (horse_key, surface) in curves table.
-2. **RKM-T1.2:** Find duplicate horse names in `rkm_velocity_curves` and trace through joins.
-3. **RKM-T1.3:** Count starters with `n_recent_races = 1` in `rkm_current_form`. Should be substantial after Phase 3 recompute; near-zero confirms loop bound bug.
-4. **RKM-T1.4:** Pick a known horse with form changes; manually compute as-of-date career baseline vs stored value.
-5. **WA-T1.1:** Run grid search of k from 0.5 to 1.2 against actual finish frequencies.
-6. **WA-T1.2:** Re-fit payoff with year-stratified holdout. Compare to naive baseline.
-7. **WA-T1.3:** Re-fit payoff without post-race features. Compare R².
-8. **WA-T1.4:** Audit consumers of `trainer_ae_profiles` table.
-9. **WA-T1.5:** Inspect `jitter_calibration.json` patterns (already done — confirmed).
-10. **RDS-T1.1:** Test TEMPERATURE values at 200, 500, 1000, 6500ms on representative races. Calibrate against historical strike rates.
-11. **RDS-T1.2 to T1.5:** Code review only — already verified.
-
-### Phase B: Apply Tier 1 fixes one at a time, verify each
-
-Order by likely impact and ease of fix:
-
-1. **RDS-T1.2** (off-turf favorite-only) — quick code fix, no DB recompute
-2. **RDS-T1.3** (turf prior offset) — quick code fix
-3. **RDS-T1.4** (surface-switch double-count) — quick code fix
-4. **RDS-T1.5** (parlay_prob normalization) — quick code fix
-5. **RDS-T1.1** (TEMPERATURE) — code fix + calibration verification
-6. **RKM-T1.3** (form loop bound) — code fix + recompute
-7. **RKM-T1.4** (career baseline leakage) — significant rework + recompute
-8. **WA-T1.4** (trainer profiles point-in-time) — significant rework
-9. **WA-T1.3** (payoff post-race features) — re-fit
-10. **WA-T1.2** (payoff R² inflation) — re-fit with stratification
-11. **WA-T1.1** (Stern k calibration) — new calibration script
-12. **RKM-T1.1 + T1.2** (track normalization + identity joins) — major RKM rework
-
-After EACH fix:
-- Re-run a sim day or two with the same seed as before-fix
-- Compare ratings/edges/conviction candidates side by side
-- If the fix moved metrics in the expected direction, keep it. If not, investigate.
-
-### Phase C: Tier 2 cleanup
-
-After Tier 1 fixes are validated, address the cross-cutting issues (date ranges, A/E normalization, coupled entries) and the smaller localized bugs.
-
----
-
-## Notes for Future Self
-
-- These findings came from agent-based analysis. Some may be incorrect interpretations of the code. Verify before fixing.
-- Many of the "HIGH severity" findings interact. Fixing them one at a time is the only way to know which contributed what.
-- The known `odds_to_rating` rank-mapping issue (in `edge-calibration-issue.md`) is separate from these findings but compounds with them.
-- Phase 3 RKM recompute (lower MIN_PRIOR_RACES) is still pending. Should be done AFTER fixing the loop-bound bug (RKM-T1.3) so the recompute actually picks up 2nd-start horses.
-
----
-
 ## Tier 3: Protocol/Code Alignment Issues
 
 A second-pass audit examined `simulation-protocol.md`, `wagering-framework.md`, `itp-principles.md`, `itp-wagering-framework.md`, and `research-plan.md` against the actual code. Findings: **the wagering protocol is mostly aspirational with respect to the code.** The code implements rating computation and a single conviction filter; nearly every wagering rule documented in the protocol is unenforced.
@@ -521,17 +454,6 @@ After verifying Tier 1/2 findings, address:
 5. **Resolve FTS contradiction** between itp-principles.md and wagering-framework.md
 6. **Implement opinion classification** in `protocol_check` (six types from Step E.1)
 7. **Decide whether press/basket structure** is worth coding, or document as judgment-only
-
----
-
-## Coverage notes
-
-This audit covered code logic, statistical calibration, pre-race firewall integrity, and protocol/code alignment. NOT covered:
-- Performance / scaling (heavy queries over the SSH tunnel, etc.)
-- Wagering psychology / discipline (whether the protocol is correct in principle, only whether the code enforces it)
-- Long-run statistical validity (whether 100+ sim days would actually show edge)
-
-A second pass added: shared docs (`/github/docs/`), pdf-importer, and chart-parser.
 
 ---
 
@@ -916,6 +838,29 @@ Catches `IOException`, logs, returns whatever was accumulated. Truncated multi-p
 
 ---
 
+## Coverage notes
+
+This audit covered code logic, statistical calibration, pre-race firewall integrity, and protocol/code alignment. NOT covered:
+- Performance / scaling (heavy queries over the SSH tunnel, etc.)
+- Wagering psychology / discipline (whether the protocol is correct in principle, only whether the code enforces it)
+- Long-run statistical validity (whether 100+ sim days would actually show edge)
+
+A second pass added: shared docs (`/github/docs/`), pdf-importer, and chart-parser.
+
+---
+
+## What's NOT a problem (verified during audit)
+
+- Linear deceleration model is empirically defensible
+- Huber reweighting in curves.py is standard
+- WCMI computation is mathematically correct
+- The point-in-time CTEs in `load_market_bias` are properly date-bounded (no new leaks beyond known curve issue)
+- Most class-rating multipliers in `bias_multiplier` are correctly derived from research (1.022 first-Lasix, 1.101 blinkers-off, 0.970 first-blinkers, 0.961 class-rise, 1.029 class-drop all check out)
+- Identity disambiguation logic is mostly right (small leap-year edge case)
+- The previously-known `odds_to_rating` rank-mapping issue is documented in `edge-calibration-issue.md`
+
+---
+
 ## Updated Phase Priority
 
 After all four audit passes:
@@ -936,3 +881,58 @@ After all four audit passes:
 - CP-T6.5/T6.6/T6.7
 
 The pdf-importer/chart-parser issues are mostly silent corruption at the source. They affect every downstream calculation but are individually small. Worth running batch verification queries when DB access returns to estimate the actual data corruption rate before deciding which to fix first.
+## Verification & Remediation Plan
+
+When robinpc DB access is restored:
+
+### Phase A: Verify Tier 1 findings (DB queries, no code changes yet)
+
+1. **RKM-T1.1:** Query `rkm_track_offsets` distribution. Count distinct tracks per (horse_key, surface) in curves table.
+2. **RKM-T1.2:** Find duplicate horse names in `rkm_velocity_curves` and trace through joins.
+3. **RKM-T1.3:** Count starters with `n_recent_races = 1` in `rkm_current_form`. Should be substantial after Phase 3 recompute; near-zero confirms loop bound bug.
+4. **RKM-T1.4:** Pick a known horse with form changes; manually compute as-of-date career baseline vs stored value.
+5. **WA-T1.1:** Run grid search of k from 0.5 to 1.2 against actual finish frequencies.
+6. **WA-T1.2:** Re-fit payoff with year-stratified holdout. Compare to naive baseline.
+7. **WA-T1.3:** Re-fit payoff without post-race features. Compare R².
+8. **WA-T1.4:** Audit consumers of `trainer_ae_profiles` table.
+9. **WA-T1.5:** Inspect `jitter_calibration.json` patterns (already done — confirmed).
+10. **RDS-T1.1:** Test TEMPERATURE values at 200, 500, 1000, 6500ms on representative races. Calibrate against historical strike rates.
+11. **RDS-T1.2 to T1.5:** Code review only — already verified.
+
+### Phase B: Apply Tier 1 fixes one at a time, verify each
+
+Order by likely impact and ease of fix:
+
+1. **RDS-T1.2** (off-turf favorite-only) — quick code fix, no DB recompute
+2. **RDS-T1.3** (turf prior offset) — quick code fix
+3. **RDS-T1.4** (surface-switch double-count) — quick code fix
+4. **RDS-T1.5** (parlay_prob normalization) — quick code fix
+5. **RDS-T1.1** (TEMPERATURE) — code fix + calibration verification
+6. **RKM-T1.3** (form loop bound) — code fix + recompute
+7. **RKM-T1.4** (career baseline leakage) — significant rework + recompute
+8. **WA-T1.4** (trainer profiles point-in-time) — significant rework
+9. **WA-T1.3** (payoff post-race features) — re-fit
+10. **WA-T1.2** (payoff R² inflation) — re-fit with stratification
+11. **WA-T1.1** (Stern k calibration) — new calibration script
+12. **RKM-T1.1 + T1.2** (track normalization + identity joins) — major RKM rework
+
+After EACH fix:
+- Re-run a sim day or two with the same seed as before-fix
+- Compare ratings/edges/conviction candidates side by side
+- If the fix moved metrics in the expected direction, keep it. If not, investigate.
+
+### Phase C: Tier 2 cleanup
+
+After Tier 1 fixes are validated, address the cross-cutting issues (date ranges, A/E normalization, coupled entries) and the smaller localized bugs.
+
+---
+
+## Notes for Future Self
+
+- These findings came from agent-based analysis. Some may be incorrect interpretations of the code. Verify before fixing.
+- Many of the "HIGH severity" findings interact. Fixing them one at a time is the only way to know which contributed what.
+- The known `odds_to_rating` rank-mapping issue (in `edge-calibration-issue.md`) is separate from these findings but compounds with them.
+- Phase 3 RKM recompute (lower MIN_PRIOR_RACES) is still pending. Should be done AFTER fixing the loop-bound bug (RKM-T1.3) so the recompute actually picks up 2nd-start horses.
+
+---
+
