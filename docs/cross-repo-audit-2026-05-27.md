@@ -838,6 +838,78 @@ Catches `IOException`, logs, returns whatever was accumulated. Truncated multi-p
 
 ---
 
+## Tier 7: Data Extraction Enhancement — Trip Classification from Footnotes
+
+This is a future-enhancement proposal, not a bug. Captures the design decisions discussed for extending chart-parser to extract structured trip information from `races.footnotes` and `starters.comments`. Related to CP-T6.10 (per-starter trip notes not structured) and Item 13 of the research plan.
+
+### Context
+
+Race-replay already implements a deterministic regex-based footnote parser at `race-replay/public/replay.js:218-271` (`parseLateral` + `buildLateralHints`). It segments footnotes by uppercase horse name and extracts spatial hints (early/mid/late wide values, inside/outside qualifiers) for visual lane offsets in the 3D replay. This is a starting point — but the question is whether and how to lift this into chart-parser/pdf-importer so the structured data is available to all consumers (rkm, wagering-analytics, race-day-sim).
+
+### Decision 1 — Should chart-parser/pdf-importer derive a `wide` value at each point of call?
+
+**No.** Reasons:
+
+1. **The data is structurally incomplete.** Chartwriters describe what's memorable, not what's exhaustive. They'll mention "5 wide on the turn" for the horse that lost ground but say nothing about the horse that saved ground. Populating per-call `wide` for some horses and leaving NULL for others creates a misleading "absence of note = horse was on the rail" inference that isn't supported by the data.
+
+2. **It's a lossy one-way conversion.** If the parsing is wrong (uppercase-name segmentation mis-attributing a sentence), the DB now contains corrupt structured data. Consumers can't reverse-engineer back to the source. Leaving the footnote intact lets consumers re-parse with better logic later.
+
+3. **Different consumers want different precision.** race-replay wants numeric offsets (0.2 / 2.5 / 4.0) for visual lanes. rkm wants categorical labels (WIDE_TRIP) for v0-residual analysis. race-day-sim wants per-call trouble flags for form-context discounting. Forcing one canonical numeric representation in the DB constrains all consumers to the lowest-common interpretation.
+
+4. **Equibase already provides a structured `wide` field on points_of_call.** That's the authoritative source. Footnote-derived wide values would compete with it and create ambiguity about which to trust.
+
+5. **chart-parser already has silent-corruption issues** (DQ cascade, time regex, scratched-horse comma split — see Tier 6). Adding more interpretive parsing to the source-of-truth project before fixing existing bugs adds risk without retiring any.
+
+### Decision 2 — What chart-parser SHOULD extract (lower risk)
+
+Two new columns on `starters` (subject to validation in the analysis phase):
+
+- **`starters.trip_phrase`** (text) — the footnote sentence attributed to this starter via uppercase-name segmentation. Verbatim text, no interpretation. Lets downstream consumers parse however they want.
+- **`starters.trip_label`** (enum: `TROUBLE / WIDE / DREW_OFF / PRESSED / EASY / NORMAL / UNCLASSIFIED`) — categorical classification. Useful for joins to `rkm_race_performance.surprise` and for race-day-sim's form-context layer.
+
+The numeric-spatial derivation (race-replay's per-phase wide values) stays in race-replay as a visualization concern.
+
+### Decision 3 — Deterministic vs LLM?
+
+**Deterministic for structural extraction.** Equibase chartwriters use formulaic vocabulary ("rallied", "stalked", "tracked", "set pressured fractions"). A regex/lexicon-based extractor handles 95%+ of cases. LLMs are slow, expensive, non-reproducible, and overkill for structural classification. chart-parser is regex-based throughout — staying consistent matters.
+
+**LLM only at the synthesis layer, optional and downstream.** Generating a pre-race "Edge Call narrative" from the model's outputs (pace prediction, decay profiles, expected positions) is something an LLM does well. After the race, comparing the projected narrative to the actual chartwriter footnote becomes interesting validation. But that's a race-day-sim feature, not a chart-parser feature.
+
+### Decision 4 — DB analysis BEFORE writing the spec
+
+**Required.** Risk of writing the spec without analysis: encoding our mental model of what footnotes look like instead of what they actually contain.
+
+Specific analysis questions:
+
+1. **Vocabulary distribution.** Top 100 bigrams/trigrams in `races.footnotes` and `starters.comments`. Identify phrases not anticipated by the proposed enum.
+
+2. **Phrase coverage per category.** For the proposed enum {TROUBLE, WIDE, DREW_OFF, PRESSED, EASY, NORMAL, UNCLASSIFIED}: what fraction of starters get matched? How many fall to UNCLASSIFIED?
+
+3. **Inter-class overlap.** Phrases that legitimately fit two categories (e.g., "steadied wide" — TROUBLE or WIDE?). Disambiguation rules.
+
+4. **Era drift.** Does chartwriter language differ between 1995 and 2015? Regional or per-track variations? If so, the extractor needs era-awareness.
+
+5. **Sentence segmentation accuracy.** Random sample of 200 races: manually verify each sentence is correctly attributed. The uppercase-name approach can fail when one horse's name is contained in another's (e.g., "KING" inside "KING'S BISHOP"). Quantify the error rate.
+
+6. **Validation against `surprise`.** Research-findings.md Item 13 measured: PRESSED → -0.25 ft/s surprise; DREW_OFF → +0.73; TROUBLE → -0.04. After the new classification, reproduce these averages? If yes, the new classifier is at least as good as the research-time prototype. If not, the new vocabulary is worse than what we already have.
+
+### Recommended phased approach
+
+| Phase | Purpose | Output | DB needed? |
+|---|---|---|---|
+| 1. Analysis | Understand actual footnote language | Vocabulary report, phrase distribution, era drift assessment | Yes |
+| 2. Spec | Define `trip_label` enum, segmentation rules, classifier logic | `docs/specs/trip-classification.md` | Optional |
+| 3. Prototype | Python extractor, run against historical data, validate vs surprise | Working classifier with documented coverage and accuracy | Yes |
+| 4. Implementation | Port validated logic into chart-parser | New columns + extractor, schema migration | No (until deploy) |
+
+Without phases 1 and 3, anything that goes into chart-parser is guesswork dressed up as engineering. Worth a couple of focused sessions when DB access is available.
+
+### Severity / priority
+
+**MEDIUM** — this is a feature gap, not a bug. The current state (footnotes as text blob, no per-starter structuring) means trip information is lost to all downstream consumers except via ad-hoc parsing. But the system functions without it. Should be tackled AFTER Tier 1 system bugs are fixed and the more impactful data-leakage issues resolved.
+
+---
+
 ## Coverage notes
 
 This audit covered code logic, statistical calibration, pre-race firewall integrity, and protocol/code alignment. NOT covered:
