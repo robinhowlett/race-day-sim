@@ -30,19 +30,31 @@ Combines v0 + decay into "how fast would this horse complete today's distance?"
 
 **Anchor: 100 = the canonical race winner.**
 
-The canonical race is the single most representative performance benchmark in American racing — NOT an average across all conditions, but a specific, defined context:
+The canonical race is empirically determined from 1.59M TB races (1991-2017) as the intersection of maximum volume and minimum coefficient of variation — the single most stable, representative performance benchmark in American racing.
 
-**The canonical race:**
-- 4yo+ open (males and females eligible, but predominantly male fields)
-- Claiming level ($20K-$40K purse range)
-- Dirt surface, fast track condition
-- Route distance (8-9 furlongs)
-- Mid-tier track (not a premier meet, not a bush track — the middle 60% of tracks by handle)
-- Field size 8-10 starters
+**The canonical race (empirically validated):**
+- 4yo+ open/male (sexes code "A", not female-only)
+- Claiming level, **$5,000–$10,000 claiming price** (the median claiming price is $6,250)
+- Dirt surface, Fast track condition
 - Non-state-bred, non-restricted
+- Field size ≥ 5 starters
 - Obvious outliers excluded (no 50+ length losers)
 
-This is the most common race run in America. The shipping-horse network already normalizes across tracks, so "mid-tier track" is handled by adj_v0. The remaining dimensions (age, sex, class, conditions) define what 100 means.
+**Reference distances and anchor times:**
+- Sprint anchor: **6 furlongs = 71,577ms** (N=2,709 races, CV=0.016)
+- Route anchor: **8 furlongs = 99,192ms** (N=1,403 races, CV=0.018)
+
+(CV = coefficient of variation = σ/mean. Lower = more consistent winner times = better calibration anchor.)
+
+**Why $5K-$10K claiming (not $20K-$40K):**
+The $5K-$10K tier has the lowest coefficient of variation (CV = σ/μ) of any claiming level: 0.0156 sprint, 0.0177 route. Lower CV = more consistent winner times = more stable anchor for calibration. The ≤$5K tier has higher volume but wider variance (CV=0.0207) because it captures a broader ability range (a barely-competitive $2,500 claimer through a fit $5,000 claimer). The $5K-$10K level is also the population median ($6,250 median claim price), making it the true center of mass of American racing.
+
+**Volume context (2000-2017, open/male, 4yo+, non-state-bred, Fast dirt):**
+- CLM ≤$5K: 4,651 sprint / 2,046 route
+- CLM $5K-$10K: 2,709 sprint / 1,403 route
+- CLM $10K-$16K: 1,425 sprint / 686 route
+- CLM $16K-$25K: 954 sprint / 433 route
+- All classes combined at 6f: 12,308 races in the full ladder
 
 **Everything is measured relative to this canonical race on its surface:**
 
@@ -51,13 +63,52 @@ This is the most common race run in America. The shipping-horse network already 
 - A Grade 1 stakes winner at 125 — clearly 25 points above the journeyman level
 - A champion at 140+ — generational talent
 
-**Surface-specific canonical races:**
+**Scaling: milliseconds per rating point**
+- Sprint (6f): **58 ms/point** (derived from MCL-to-Stakes span of ~2,913ms ≈ 50 points)
+- Route (8f): **77 ms/point** (derived from MCL-to-Stakes span of ~3,326ms ≈ 50 points)
 
-The physics differ so much between dirt/turf/synthetic that each surface needs its own 100-point anchor:
-- Dirt route: canonical as described above
-- Dirt sprint: same conditions but ≤6.5f
-- Turf route: same conditions but turf surface (slower raw times, different decay profiles)
-- Turf sprint: same (rare in US, sparse data)
+**Implied class ratings (6f sprint):**
+
+| Level | Avg Winner Time (ms) | Rating |
+|---|---|---|
+| Maiden Claiming | 72,482 | 84 |
+| CLM ≤$5K | 72,516 | 84 |
+| **CLM $5K-$10K (anchor)** | **71,577** | **100** |
+| CLM $10K-$16K | 71,214 | 106 |
+| CLM $16K-$25K | 70,798 | 113 |
+| Allowance | 70,776 | 114 |
+| CLM $25K-$40K | 70,594 | 117 |
+| AOC | 70,260 | 123 |
+| Stakes (avg) | 69,603 | 134 |
+
+**Length equivalence:**
+- At 6f finish velocity (~50.2 ft/s): 1 length ≈ 169ms ≈ 2.9 rating points
+- At 8f finish velocity (~49.9 ft/s): 1 length ≈ 170ms ≈ 2.2 rating points
+
+**Universal scale with surface-specific anchors (Option B):**
+
+One rating scale across all surfaces. The dirt anchor defines 100. Other surfaces are bridged via empirical cross-surface horse performance (Item 11 research).
+
+Surface-specific anchor conditions differ because the market structure differs:
+
+| Surface | Sprint Dist | Route Dist | Canonical Class | Condition |
+|---|---|---|---|---|
+| Dirt | 6f | 8f | CLM $5K-$10K | Fast |
+| Turf | 5f | 8f-8.5f | CLM $16K-$25K | Firm |
+| Synthetic | 6f | 8f | CLM $5K-$10K | Fast |
+
+**Why turf's canonical class is higher ($16K-$25K):**
+Turf claiming below $12,500 barely exists (21 races at ≤$5K vs 828 at $10K-$16K). The turf claiming market starts higher because fewer turf-bred horses enter low claiming — they get placed in allowance or shipped to a turf-friendly track. The turf anchor maps to approximately rating 112 on the universal (dirt-based) scale; the cross-surface conversion factor from Item 11 will refine this.
+
+**Surface decay profiles (empirically measured at 8f claiming route):**
+
+| Surface | Opening v (ft/s) | Closing v (ft/s) | Deceleration | Character |
+|---|---|---|---|---|
+| Dirt | 55.1 | 49.9 | -9.4% | Speed-favoring, heavy friction |
+| Synthetic | 53.8 | 50.7 | -5.7% | Intermediate — closer to turf |
+| Turf | 55.8 | 53.9 | -3.3% | Stamina-favoring, minimal friction |
+
+Synthetic sits between dirt and turf on decay but is closer to turf. A horse's turf curve may be a better predictor of synthetic performance than their dirt curve for the stamina component.
 
 Within a single race all horses are on the same surface at the same distance, so ratings are directly comparable regardless of which surface anchor was used.
 
@@ -158,22 +209,107 @@ Expressed as rating points above/below career baseline. A horse with Form +11 is
 - `last_raced_position` → correlates with v0_trend (recent winner = likely positive trend)
 - `field_size` → adds noise, not systematic bias; already handled by probability normalization
 
+## Market Bias Layer (A/E, Impact Value, WCMI)
+
+Research items 3-12 each have TWO outputs:
+1. **Physical effect** — does this factor change velocity? (feeds into RKM rating adjustment)
+2. **Market bias** — does the crowd properly price this factor? (feeds into wagering value)
+
+These are independent. A factor can have zero physical effect but massive market bias (e.g., if the crowd over-believes weight matters, top weights become systematically underbet). Conversely, a factor can have real physical impact that the crowd already prices correctly (no wagering edge).
+
+### A/E (Actual / Expected)
+
+Measures whether a GROUP wins more or less often than its odds imply:
+
+```
+A/E = actual_winners / expected_winners_from_odds
+    = actual_winners / sum(1 / (SP + 1)) for all runners in group
+```
+
+- A/E > 1.0 → group wins MORE than market expects → systematically underbet (value)
+- A/E < 1.0 → group wins LESS than market expects → systematically overbet (avoid)
+- A/E = 1.0 → market prices this group correctly
+
+A/E is the primary metric for detecting exploitable market biases. Every research item (3-12) should compute A/E by characteristic, not just physical effect.
+
+### Impact Value (IV)
+
+Measures whether a GROUP wins more or less than its fair share of races:
+
+```
+IV = (group % of winners) / (group % of runners)
+```
+
+- IV > 1.0 → wins more than proportional share
+- IV < 1.0 → wins less than proportional share
+- IV = 1.0 → neutral
+
+IV detects ability signal. A/E detects market bias. They can diverge: a group can have high IV (genuinely better) but neutral A/E (market already knows), or neutral IV (no ability edge) but high A/E (market over-penalizes them).
+
+**IV is critical for Item 10/12** — in limited-form races (maidens, first-time starters), IV by trainer/jockey/sire replaces individual horse curves as the primary assessment tool.
+
+### WCMI (Wisdom of Crowd Market Index)
+
+Adapted from Shannon's Entropy — measures how informed the market is about a race:
+
+```
+WCMI = 1 - (-sum(p_i * log_n(p_i)))
+where p_i = implied probability of runner i, n = number of runners
+```
+
+- WCMI → 0.0: all runners same price, market knows nothing (maximum entropy)
+- WCMI → 1.0: market fully resolved, one horse at minimum odds
+- WCMI < 0.13: crowd is uninformed — opportunity for informed model (per Matekus)
+- WCMI > 0.20: crowd is well-informed — model edge is smaller
+
+**Applications in our system:**
+- **Race selection:** Prefer low-WCMI races where our model adds most incremental value
+- **Kelly sizing:** Bet more aggressively in low-WCMI markets (model edge is larger)
+- **Horizontal strategy:** Low-WCMI legs are where spreading pays — the crowd is guessing, so exotic payoffs are inflated by the uncertainty
+- **Maiden race validation:** Maiden races should have systematically lower WCMI (confirms the ITP principle that these races have value from uncertainty)
+
+### Where This Lives in the Architecture
+
+```
+RKM (physics)         → individual horse rating, form, stamina
+                             ↓
+Market Bias Layer     → A/E by characteristic, WCMI per race, IV by group
+(wagering-analytics)     ↓
+race-day-sim          → combines rating + market bias to construct bets
+```
+
+The Market Bias Layer belongs in **wagering-analytics** as a new analysis phase. RKM remains pure physics (velocity curves, normalization). The bias layer uses RKM outputs PLUS market data to identify systematic mispricings at the GROUP level.
+
+**Implications for wagering-analytics:**
+The current wagering-analytics computes fair value for exotic *outcomes* (given who finished where, was the payoff fair?). The Market Bias Layer adds: given observable *pre-race characteristics*, does the market systematically misprice certain types of horses? This is a new phase (AN2?) that should compute:
+1. A/E tables by factor (weight, PP, medication, trainer first-out rate, etc.)
+2. WCMI for every race in the database
+3. IV tables for limited-form contexts (trainer × surface × distance for maidens)
+
+These become static lookup tables that race-day-sim consults during the blinded phase — they represent market biases observable from historical data, not post-race information.
+
+---
+
 ## Open Questions
 
-### Weight carried
+### Weight carried ✅ RESEARCHED (Item 3)
 
-The current model IGNORES weight. A horse's adj_v0 reflects their observed performance at whatever weight they carried. This means:
-- Horses consistently carrying high weight (126+) have their true ability UNDERSTATED
-- Weight changes between races are a systematic factor the model doesn't capture
-- Handicap races are specifically designed to defeat ratings — weight equalizes
+"Weight" in racing = carried weight (jockey + tack + lead pads), not the horse's body mass. A typical horse weighs ~1,100-1,200 lbs; carried weight ranges from 108-130 lbs. In claiming races, weight is assigned by a schedule (age/sex allowances). In handicaps/stakes, it's assigned by the racing secretary based on perceived ability — better horses carry more.
 
-**Research needed:**
-- What is the empirical ft/s per lb relationship in the data? (regress v0 residuals on weight)
-- Does it vary by horse size, distance, surface?
-- The commonly cited "1 length per 5 lbs at a mile" = ~1.75 ft/s per 5 lbs = 0.35 ft/s per lb. Is this confirmed by our data?
-- Should we weight-adjust the curves? Or just flag it as a known limitation?
+**Findings (research-plan Item 3, 2026-05-26):**
 
-The `starters.weight` column is available in the database. A calibration query could examine whether horses carry different weight correlates with systematic v0 residuals.
+Physical effect:
+- Within-horse regression: -0.008 ft/s per lb (sprint), -0.005 ft/s per lb (route)
+- R² ≈ 0 — weight explains almost nothing about velocity after controlling for ability
+- The folk wisdom "1 length per 5 lbs" (0.35 ft/s/lb) is **44× larger** than the observed effect
+
+Market bias (the exploitable finding):
+- IV by carried weight: horses assigned top weight (124+ lbs) have IV=1.08 (win 8% more than share — they're better horses)
+- A/E by carried weight: top weight A/E=0.789 vs light weight (≤114) A/E=0.814
+- The crowd **over-bets top weights** by 2.5-3.7 percentage points — they over-believe "weight stops trains"
+- 5lb apprentice jockeys: A/E=0.825 (best value), crowd over-penalizes the "bug" stigma
+
+**Conclusion:** No rating adjustment for weight. The curve already absorbs it. The edge is in the Market Bias Layer — light weights and apprentice-ridden horses are systematically underbet.
 
 ### 2yo ratings over time
 

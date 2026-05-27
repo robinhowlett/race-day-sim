@@ -4,9 +4,11 @@ Database-dependent investigations required before the rating and output systems 
 
 ---
 
-## Prerequisite: Backfill Unmapped Columns
+## Prerequisite: Backfill Unmapped Columns ✅ COMPLETE
 
-Three columns in the `races` table were never populated by pdf-importer (now fixed for new imports — see pdf-importer commit `5a29666`). Existing data needs a one-time backfill before research queries that depend on them:
+Three columns in the `races` table were never populated by pdf-importer (now fixed for new imports — see pdf-importer commit `5a29666`). Existing data needs a one-time backfill before research queries that depend on them.
+
+**Status:** Backfill completed 2026-05-26. Results: `off_turf` 24,492 true (1.3%), `female_only` 521,570 true (28%), `age_code` 446,242 remain NULL (no age data in chart).
 
 ```sql
 -- off_turf: race was moved from turf to dirt due to weather
@@ -40,9 +42,18 @@ WHERE age_code IS NULL;
 
 ---
 
-## Prerequisite: Data Quality Assessment by Year
+## Prerequisite: Data Quality Assessment by Year ✅ COMPLETE
 
 Before deciding which date range to use for research and curve fitting, characterize data quality across the full date range in the database.
+
+**Status:** Completed 2026-05-26. Key findings:
+- **No 200ms rounding cliff exists.** The rkm-v3 claim of "5% at 200ms rounding pre-1997" is false — it's 5-6% in 1992-1998 (consistent with random chance) and drops to ~2% post-2001. All years have ~20% divisible by 10ms (expected from 10ms display precision).
+- **Individual fractionals:** Consistent at ~3.4-3.5 points per starter across all years 1991-2017.
+- **Points of call:** Rock solid at 5.3 per starter across all years.
+- **Exotic data:** Pre-1998 = none. 1998 = partial (36% exacta). 1999+ = 80%+ exacta/trifecta. Superfecta ramps from 20% (1999) to 87% (2015).
+- **Usable range:** 1991-2017 for curve fitting (all years valid). 1999-2017 for wagering research.
+- **2018-2019:** Only 246/68 races (single track partial import) — exclude.
+- **Implication for rkm-v3 spec:** The 1997 floor was overly conservative. Could expand to 1991-2017 for an additional 6 years of data (~450K races) without quality concerns.
 
 ```sql
 -- 1. What years are in the database and how much data exists?
@@ -124,9 +135,19 @@ GROUP BY 1 ORDER BY 1;
 
 ---
 
-## 1. Identify the Canonical Race
+## 1. Identify the Canonical Race ✅ COMPLETE
 
 **Goal:** Empirically determine which race conditions represent the true "center of mass" of American racing — the single anchor point (100) for the rating scale.
+
+**Status:** Completed 2026-05-26. Results documented in `rating-calibration-plan.md`.
+
+**Findings:**
+- Canonical race = CLM $5K-$10K, open/male, 4yo+, non-state-bred, Fast dirt (CV=0.016 sprint, 0.018 route)
+- Sprint anchor: 6f, 71,577ms (N=2,709)
+- Route anchor: 8f, 99,192ms (N=1,403)
+- Universal scale (Option B): single rating system, surface-specific anchor times, bridged by crossover horses
+- Turf canonical = CLM $16K-$25K (low-claiming turf barely exists; maps to ~112 on dirt scale)
+- Synthetic decay profile (5.7%) is between dirt (9.4%) and turf (3.3%), closer to turf
 
 **Approach:** Rather than declaring "4yo+ open dirt route claiming" as canonical, find it from the data.
 
@@ -188,9 +209,18 @@ ORDER BY cv ASC;  -- lowest CV = most stable anchor
 
 ---
 
-## 2. Scaling: What Does One Rating Point Mean?
+## 2. Scaling: What Does One Rating Point Mean? ✅ COMPLETE
 
 **Goal:** Determine how many milliseconds of projected time difference = 1 rating point.
+
+**Status:** Completed 2026-05-26. Results documented in `rating-calibration-plan.md`.
+
+**Findings:**
+- Scale: 58ms/point (6f sprint), 77ms/point (8f route)
+- Derived via Option C: MCL-to-Stakes span ≈ 50 points
+- 1 length at finish ≈ 169-170ms ≈ 2.9 pts (sprint) / 2.2 pts (route)
+- Class ratings validate: MCL=84, CLM $5K-$10K=100, ALW=114, AOC=123, Stakes=134
+- Champions project to ~140-145, non-winners to ~80-85
 
 **Approach:** From the canonical race distribution, define the scale such that meaningful competitive separation maps to interpretable point differences.
 
@@ -996,22 +1026,22 @@ This feeds back into the simulation: if a horse's last trip comment was "all out
 
 ## Execution Priority
 
-| # | Research | Blocks | Effort |
-|---|---|---|---|
-| 0a | Backfill unmapped columns | Items 1, 9, 11, 12 | Low (3 SQL statements) |
-| 0b | Data quality assessment | All items (determines date range) | Low (query-only) |
-| 1 | Canonical race identification | Rating anchor | Low (query-only) |
-| 2 | Scaling (ms per point) | Rating scale | Low (follows from #1) |
-| 3 | Weight impact | Handicap race rating adjustment | Medium (regression) |
-| 4 | Post position bias | Track-specific edge detection | Medium (per-track analysis) |
-| 5 | Medication/equipment | Form prediction improvement | Medium (sequential join) |
-| 6 | Trainer change | Form prediction improvement | Low (pre/post comparison) |
-| 7 | Track condition | Conditional rating adjustment | Medium (within-horse analysis) |
-| 8 | Run-up distance | Normalization validation | Low (quick check) |
-| 9 | Off-turf reliability | Curve fitting quality | Low (quick check) |
-| 10 | Limited-form races | Horizontal strategy + maiden assessment | Medium (multi-query) |
-| 11 | Surface specialization | Cross-surface prediction + off-turf edge | Medium (correlation analysis) |
-| 12 | Point-in-time connections stats | Maiden/FTS assessment inputs | High (needs temporal computation) |
-| 13 | Race narrative analysis | Pace validation + trip trouble + output layer | Medium (NLP + correlation) |
+| # | Research | Blocks | Effort | Status |
+|---|---|---|---|---|
+| 0a | Backfill unmapped columns | Items 1, 9, 11, 12 | Low (3 SQL statements) | ✅ Done |
+| 0b | Data quality assessment | All items (determines date range) | Low (query-only) | ✅ Done |
+| 1 | Canonical race identification | Rating anchor | Low (query-only) | ✅ Done |
+| 2 | Scaling (ms per point) | Rating scale | Low (follows from #1) | ✅ Done |
+| 3 | Weight impact | Handicap race rating adjustment | Medium (regression) | ✅ Done |
+| 4 | Post position bias | Track-specific edge detection | Medium (per-track analysis) | ✅ Done |
+| 5 | Medication/equipment | Form prediction improvement | Medium (sequential join) | ✅ Done |
+| 6 | Trainer change | Form prediction improvement | Low (pre/post comparison) | ✅ Done |
+| 7 | Track condition | Conditional rating adjustment | Medium (within-horse analysis) | ✅ Done |
+| 8 | Run-up distance | Normalization validation | Low (quick check) | ✅ Done |
+| 9 | Off-turf reliability | Curve fitting quality | Low (quick check) | ✅ Done |
+| 10 | Limited-form races | Horizontal strategy + maiden assessment | Medium (multi-query) | ✅ Done |
+| 11 | Surface specialization | Cross-surface prediction + off-turf edge | Medium (correlation analysis) | ✅ Done |
+| 12 | Point-in-time connections stats | Maiden/FTS assessment inputs | High (needs temporal computation) | |
+| 13 | Race narrative analysis | Pace validation + trip trouble + output layer | Medium (NLP + correlation) | ✅ Done |
 
-Items 0a-0b are prerequisites. Items 1-2 block the rating system. Items 3-9 refine the model. Items 10-12 enable full-card simulation. Item 13 enriches the output layer and provides validation feedback.
+Items 0a-0b are prerequisites. Items 1-2 block the rating system — **now complete, documented in `rating-calibration-plan.md`**. Items 3-9 refine the model. Items 10-12 enable full-card simulation. Item 13 enriches the output layer and provides validation feedback.
