@@ -178,15 +178,64 @@ For any horse 10/1+ that has:
 These horses go into wider exotic spreads in 2nd/3rd positions. The model might flag them as declining, but career ability doesn't disappear entirely.
 
 ### E. Determine bet structure
-Based on the qualitative favorite assessment and field depth:
 
-| Favorite assessment | Primary structure | Secondary |
+**Start with your opinions, not with a pool type.** The pool is the EXPRESSION of the opinion, not the starting point.
+
+**Step E.1: What are my opinions in this race?**
+
+Classify each opinion by type and strength:
+
+| Opinion | Example | Strength |
 |---|---|---|
-| **Strong** (low decay, improving, no pace pressure) | Fav on top OR fav in 2nd. Prices underneath. Small fav-excluded flyer only. | Don't fight — look for value in underneath positions |
-| **Moderate** (mixed signals, some concern) | Mix: fav in 2nd/3rd structures + some fav-excluded combos | Win bets on best alternate at value |
-| **Vulnerable** (declining, high decay, contested pace, overbet) | Primarily fav-excluded. Spread wide underneath. | Fav in 3rd at lighter weight as hedge |
+| "Horse X should win" | Edge +20 (±3), band doesn't cross zero | STRONG specific |
+| "Horse X is underbet" | Edge +8 (±6), band crosses zero slightly | MODERATE specific |
+| "The favorite is overbet" | Fav Edge < -10, band clear of zero | STRONG negative |
+| "The pace will collapse" | 3+ speed types with high decay in a route | STRUCTURAL |
+| "Several horses are roughly equal" | 3-4 horses within ±3 Edge of each other | SPREAD |
+| "No horse stands out" | All edges within ±band of zero | NO OPINION |
 
-The key question: "Does the favorite have negative Edge?" If Edge < -3 (±band), the entire non-chalk field is structurally underlaid. If Edge is neutral/positive, the favorite deserves respect in ticket construction.
+**Step E.2: What's the purest expression?**
+
+| Opinion type | Primary bet | When to escalate to exotic |
+|---|---|---|
+| STRONG specific ("X wins") | **Win bet.** This is a single-horse opinion. Express it purely. | Only add exotic if the horse is 5/1+ AND you also have a secondary opinion about who fills behind. A 2/1 shot you love is a win bet, period. |
+| MODERATE specific | **No standalone play.** Use as a horizontal leg (single or A/B) where the sequence context adds value. Or include in a vertical IF combined with a bad-fav opinion. | — |
+| STRONG negative (bad fav) | **Exotic excluding fav on top.** The value is structural — every non-fav combo is overlaid. You don't need to know WHO wins. | The MORE overbet the fav, the wider you spread. A -20 Edge fav = spread 4-5 deep excluding them. |
+| STRUCTURAL (pace collapse) | **Exacta/trifecta with closers on top.** Key the 2-3 low-decay horses in top positions, speed types underneath (they may grab a placing even after fading). | — |
+| SPREAD (competitive field) | **Horizontal leg only.** This race adds value to a sequence but isn't worth a standalone vertical. | Or pass if not part of a viable sequence. |
+| NO OPINION | **Pass.** No bet, no inclusion in horizontals. | — |
+
+**Step E.3: Can this opinion serve a horizontal?**
+
+Before finalizing standalone bets, ask: "Is this race part of a Pick 3/4/5/6 sequence where combining it with adjacent races creates MORE value than playing verticals alone?"
+
+A horizontal is justified when:
+- You have opinions in 2+ adjacent races (at least one STRONG)
+- The takeout saving vs parlayed verticals exceeds 10%
+- At least one leg creates a "hurdle" (your opinion is different from the crowd's, creating separation)
+
+**If yes:** Construct the horizontal FIRST, then add verticals only in races where standalone value exists on top of the horizontal play.
+
+**Step E.4: Quantitative checks before commitment**
+
+For each bet, verify:
+- **Win bets:** Edge ± band entirely positive. Horse is 3/1+ (short-priced win bets have thin expected profit even with edge).
+- **Exacta key:** You have a top opinion AND a secondary opinion about 2nd place. Don't key just because you like one horse — that's a win bet you're complicating.
+- **Trifecta:** You have a bad favorite (spread ex-fav) OR you have a top pick AND some depth opinion. If you're putting 5 horses in every position, you don't have enough opinion to justify the combinations.
+- **Horizontal:** Every horse in every leg would GAIN equity if they won. Check: at their odds, does winning that leg return more than your per-combo cost? If not, remove them.
+
+**Step E.5: Sizing the basket**
+
+The favorite assessment determines basket WEIGHT, not just structure:
+
+| Favorite Edge | Basket approach |
+|---|---|
+| Fav Edge > +5 (you AGREE with the crowd) | Small play or pass. The crowd is right. Only play if you have a separate opinion (e.g., who's 2nd). |
+| Fav Edge -3 to +3 (neutral) | Moderate basket. Include fav in exotic positions. Look for value elsewhere in the field. |
+| Fav Edge < -3, band clear (OVERBET) | Full basket, fav excluded from top. Increase total investment. This is the highest-EV structural setup. |
+| Fav Edge < -10 (MASSIVELY overbet) | Maximum basket. Spread wide ex-fav. This is rare and lucrative — every non-chalk combo is overlaid. Play verticals AND horizontals. |
+
+**Critical rule: NEVER exclude the favorite from 2nd/3rd position in exotics unless you believe they'll finish OFF THE BOARD (4th+).** An overbet favorite who loses but hangs around for 2nd/3rd is STILL in the frame. Exclude from top (1st position), include in minor positions unless pace/form says they'll completely collapse.
 
 ---
 
