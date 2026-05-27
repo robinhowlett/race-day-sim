@@ -4,41 +4,49 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-Race Day Simulation — a blinded backtesting system where Claude acts as the bettor. Given a historical race day, Claude sees only pre-race information (velocity curves, odds, form trends), makes probability estimates and bet commitments, then evaluates against actual results.
+Race Day Simulation — a blinded backtesting system for pari-mutuel wagering. Given a historical race day, the system loads pre-race data (velocity curves, current form, market bias signals), computes ratings and edge, applies protocol rules to identify conviction plays, and evaluates against actual results.
 
-The simulation tests whether RKM velocity curves + Benter probability combination + ITP-informed wagering principles produce genuine prospective edge.
+The system combines three layers:
+1. **Physics** (RKM velocity curves → projected ability)
+2. **Market Bias** (AN2 trainer/jockey/equipment signals → group-level mispricing)
+3. **Wagering Structure** (pool selection, equity tests, ticket construction)
 
 ## How To Run a Simulation
 
-### Runner script (structured output):
+### Deterministic scaffold (recommended):
 ```bash
-python scripts/simulate_race_day.py --track GP --date 2014-09-06
+python scripts/run_simulation.py --seed "any text"    # hash-picks from 44K candidates
+python scripts/run_simulation.py --track GP --date 2014-09-06  # specific date
 ```
-Outputs pre-race card, pool sizes, pace predictions, probabilities, and top overlay combos per race. Pauses for bet commitment before revealing results.
+Loads data, computes ratings, applies protocol rules mechanically, surfaces conviction candidates for handicapping judgment. Registers bets by program number and evaluates results without ambiguity.
 
-### Conversational (with Claude):
-Follow `docs/simulation-protocol.md` exactly:
+### Pick a race day:
+```bash
+python scripts/pick_sim_day.py "any random text"
+```
+Hashes input text to deterministically select from 44K pre-filtered candidate days (no Grade 1/2, min field ≥7, min tri pool ≥$10K).
 
-1. Select track + date (avoid marquee days where training data contamination is likely)
-2. Load pre-race card via `blinder.load_pre_race_card()` + pool sizes via `blinder.load_pool_sizes()`
-3. Assess pools (compute density per pool type, identify where the largest/thinnest pools are)
-4. Handicap each race: pace prediction from adj_v0/decay, assess favorite vulnerability, identify contenders
-5. Use `payoff.estimate_combo_value()` to quantify overlay on candidate combinations
-6. Use `horizontal.evaluate_leg_selections()` to check equity per leg of any Pick 3/4/5/6
-7. Construct bets driven by value opinions (where does model disagree with crowd? which pool type best exploits it?)
-8. Commit ALL bets before requesting reveal
-9. Call `blinder.load_race_results()` for the reveal
-10. Run `evaluate.evaluate_race()` + `day_summary()` for P&L
+### Key protocol (for conversational sim):
+Follow `docs/simulation-protocol.md` and `docs/wagering-framework.md`:
+
+1. Load card via `blinder.load_pre_race_card()` + `load_pool_sizes()` + `load_market_bias()`
+2. Compute ratings via `ratings.format_race_ratings()` — produces RATED/UNRATED tiers
+3. Apply protocol checks: edge - band > 0? rated fraction ≥ 40%? field ≥ 7?
+4. For conviction candidates: judge form, pace, class context (this is the handicapping)
+5. Express opinion in purest pool type (win bet for specific, exotic for structural)
+6. Register bets with explicit program numbers
+7. Reveal and evaluate mechanically
 
 ## Key Modules
 
 | Module | Purpose |
 |---|---|
-| `blinder.py` | Information firewall — pre-race extraction + pool sizes + post-race reveal |
+| `blinder.py` | Information firewall — pre-race card + pool sizes + market bias signals + post-race reveal |
+| `ratings.py` | Confidence-weighted ratings: physics (curves) blended with prior (class + bias). Computes Rating, Market, Edge with ±band. Separates RATED/UNRATED tiers. |
 | `probability.py` | Benter logit (α=1.89), Stern-Harville (k=0.81), model probs from curves |
-| `pace.py` | Prospective pace prediction from field v0/decay distribution with running style profiles |
-| `payoff.py` | Projects expected exotic payoffs using OLS models (trifecta R²=0.88) from wagering-analytics. Computes overlay ratio vs Stern fair value for quantitative edge estimates. |
-| `horizontal.py` | Per-leg equity assessment for Pick 3/4/5/6. Detects ITP "flashing stop sign" legs, compares horizontal takeout vs synthetic parlay. |
+| `pace.py` | Prospective pace prediction from field v0/decay distribution |
+| `payoff.py` | Projects expected exotic payoffs using OLS models from wagering-analytics |
+| `horizontal.py` | Per-leg equity assessment for Pick 3/4/5/6 |
 | `kelly.py` | Quarter-Kelly staking, exposure caps |
 | `evaluate.py` | P&L computation, ROI, day summary |
 
@@ -65,7 +73,13 @@ These are static calibration outputs from [wagering-analytics](https://github.co
 | Document | Purpose |
 |---|---|
 | `docs/simulation-protocol.md` | Step-by-step protocol for valid blinded simulations |
-| `docs/itp-principles.md` | ITP wagering principles — verified against source transcripts |
+| `docs/wagering-framework.md` | Quantitative wagering system (edge-driven, equity tests, press mechanics) |
+| `docs/research-findings.md` | Empirical results from 13 research items (A/E tables, market bias) |
+| `docs/rating-calibration-plan.md` | Rating scale, canonical race, display format spec |
+| `docs/confidence-weighted-rating.md` | Blending spec: w_physics × physics + (1-w) × prior |
+| `docs/edge-calibration-issue.md` | Known issue: rank-mapping inflates edges (fix pending) |
+| `docs/itp-wagering-framework.md` | ITP source material (historical reference) |
+| `docs/itp-principles.md` | ITP quick reference (historical) |
 
 ## Database
 
@@ -81,9 +95,11 @@ SIM_DB_PASSWORD=handycapper
 ```
 
 Depends on:
-- `rkm_velocity_curves` — career velocity curves per horse (from [rkm](https://github.com/robinhowlett/rkm) Phase 1-2)
-- `rkm_current_form` — time-weighted current form snapshots (rkm Phase 5)
-- `races`, `starters`, `exotics` — base tables (from pdf-importer)
+- `rkm_current_form` — time-weighted current form snapshots (PRIMARY physics input, point-in-time safe)
+- `rkm_velocity_curves` — career curves (fallback only, filtered by `first_race < sim_date` to prevent future leakage)
+- `race_wcmi` — market informativeness score per race (from wagering-analytics AN2)
+- `trainer_ae_profiles` — 6-dimension trainer A/E profiles (from wagering-analytics AN2)
+- `races`, `starters`, `exotics`, `meds`, `equip` — base tables (from pdf-importer)
 
 ## Calibration Constants
 
