@@ -159,7 +159,7 @@ trainer_fts AS (
     FROM handycapper.starters s
     JOIN handycapper.races r ON r.id = s.race_id
     WHERE s.last_raced_date IS NULL
-      AND r.type LIKE '%%MAIDEN%%'
+      AND POSITION('MAIDEN' IN r.type) > 0
       AND r.breed = 'TB'
       AND r.date < %(race_date)s
       AND r.number_of_runners >= 5
@@ -279,7 +279,7 @@ jockey_track AS (
     FROM handycapper.starters s
     JOIN handycapper.races r ON r.id = s.race_id
     WHERE r.track = %(track)s
-      AND r.date BETWEEN (%(race_date)s::date - interval '365 days') AND (%(race_date)s::date - interval '1 day')
+      AND r.date BETWEEN (DATE %(race_date)s - interval '365 days') AND (DATE %(race_date)s - interval '1 day')
       AND r.number_of_runners >= 5
       AND (s.jockey_last, s.jockey_first) IN (
           SELECT DISTINCT jockey_last, jockey_first FROM race_starters
@@ -353,13 +353,13 @@ SELECT
     -- Trainer surface switch (point-in-time)
     ts.switch_starts AS trainer_switch_starts,
     CASE WHEN ts.switch_expected > 0 THEN ts.switch_wins / ts.switch_expected END AS trainer_switch_ae,
-    -- Jockey career win% (point-in-time, for tier + upgrade detection)
+    -- Jockey career win rate (point-in-time, for tier + upgrade detection)
     jc.career_starts AS jock_career_starts,
     jc.career_win_pct AS jock_career_win_pct,
     -- Jockey track form (trailing 12m)
     jt.jock_starts_12m, jt.jock_wins_12m,
     CASE WHEN jt.jock_starts_12m > 0 THEN jt.jock_wins_12m::float / jt.jock_starts_12m END AS jock_track_win_pct,
-    -- Previous jockey career win% (for upgrade/downgrade)
+    -- Previous jockey career win rate (for upgrade/downgrade)
     jc_prev.career_win_pct AS prev_jock_career_win_pct,
     CASE
         WHEN jc.career_win_pct IS NOT NULL AND jc_prev.career_win_pct IS NOT NULL
@@ -391,10 +391,10 @@ SELECT
     END AS class_move,
     -- Layoff
     CASE WHEN ps.prev_race_date IS NOT NULL
-        THEN (%(race_date)s::date - ps.prev_race_date)
+        THEN (DATE %(race_date)s - ps.prev_race_date)
     END AS days_since_prev,
     CASE WHEN ps.prev_race_date IS NOT NULL
-        THEN (%(race_date)s::date - ps.prev_race_date) >= 90
+        THEN (DATE %(race_date)s - ps.prev_race_date) >= 90
         ELSE false
     END AS is_layoff,
     -- Claimed last race
