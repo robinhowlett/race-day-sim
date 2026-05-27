@@ -7,20 +7,23 @@ Create display ratings that translate raw velocity curve parameters (adj_v0, dec
 ## Display Format
 
 ```
-Horse         Rating    Stamina  Form    Value       Confidence
-Willy Pay     112 (±3)  34       +4      +40% (±15) HIGH (28 races)
-Tinitus       105 (±3)  78       -3      -10% (±12) HIGH (24 races)
-Gamblin Fever 106 (±8)  76       +11     +65% (±30) MODERATE (8 races)
-Winner Jak     98 (±11) 82       +5      +50% (±45) LOW (5 races)
+Horse         Rating  Market  Edge     Stamina  Form   Confidence
+Willy Pay     112     106     +6 (±3)  34       +4     HIGH (28 races)
+Tinitus       105     108     -3 (±3)  78       -3     HIGH (24 races)
+Gamblin Fever 106      98     +8 (±6)  76       +11    MODERATE (8 races)
+Winner Jak     98      94     +4 (±9)  82       +5     LOW (5 races)
 ```
 
-- **Rating** = projected competitive ability at today's distance (higher = faster projected time)
+- **Rating** = projected competitive ability at today's distance (from curves + group bias adjustments)
+- **Market** = odds-implied rating (what rating the market's odds imply for this horse)
+- **Edge** = Rating − Market, in rating points (±confidence band). Positive = model thinks horse is better than market says.
 - **Stamina** = standalone decay measure (higher = holds speed better)
 - **Form** = how many rating points above/below career baseline (from v0_trend)
-- **Value** = estimated overlay percentage (what the model says this horse SHOULD pay vs what the market implies). Includes its own confidence range.
-- **Confidence** = ± range on the Rating from sample size / residual std
+- **Confidence** = ± range combining curve fit uncertainty + group bias significance
 
-Value interpretation: "+40% (±15)" means "the model estimates you'd get 40% more than fair value betting this horse, and we're fairly confident the overlay is real (even at the low end, +25% overlay)." A "+50% (±45)" means "potentially huge edge but uncertain — at the low end it could be only +5%.""
+All values in the same unit: **rating points** (1 point = 58ms sprint / 77ms route ≈ 0.3-0.5 lengths).
+
+Edge interpretation: "+6 (±3)" means the model sees this horse as 6 points better than market pricing, even at worst case still +3 pts of edge. "+4 (±9)" means edge probably exists but could be negative — low conviction.
 
 ## Three Scales
 
@@ -129,36 +132,58 @@ A horse with decay 0.5 in a zone where median is 1.9: Stamina = 100 + (1.9 - 0.5
 
 Two horses can have identical Ratings but different Stamina values — that's the information that creates exotic value through pace interaction. The high-Speed/low-Stamina horse is the speed-and-fade type; the low-Speed/high-Stamina horse is the closer.
 
-### 3. Value (Estimated Overlay %)
+### 3. Edge (Rating Points)
 
-**Expressed as the estimated percentage overlay/underlay on this horse — not rating points, but expected return above/below fair.**
+**Expressed in the same rating-point scale as everything else — a unified unit system.**
 
 ```
-model_win_prob = from Benter combination (model + odds combined)
-odds_implied_prob = from closing odds (market consensus)
-value_pct = (model_win_prob / odds_implied_prob - 1) * 100
+Edge = Rating - Market
 ```
 
-"+40%" means "the model thinks this horse should be 40% shorter in the market than they are." In betting terms, if the model is right, a $1 win bet on this horse has an expected return of $1.40 long-term.
+Where:
+- **Rating** = model's projected ability (from velocity curves + group bias adjustments)
+- **Market** = odds-implied rating (what rating would produce this horse's market probability via the Benter logit?)
 
-**Why percentage, not rating points:** "10 rating points of value" requires knowing what that means in betting terms. "+40% overlay" needs no translation — every horseplayer understands "I'm getting 40% more than I should."
+A horse with Rating 112 and Market 106 has **Edge = +6 (±3)** — the model thinks this horse is 6 rating points better than the market gives it credit for, with a confidence band of ±3.
 
-**Value also needs a confidence range:**
-- The rating itself has uncertainty (±X)
-- Each bound of that uncertainty implies a different value estimate
-- Value at rating low-end: model_prob_at_low / odds_prob - 1
-- Value at rating high-end: model_prob_at_high / odds_prob - 1
-- Display as: "+40% (±15)" meaning the overlay is between +25% and +55%
+**Composition:**
 
-**Conviction:**
-- "+40% (±15)" → even at the worst case, there's a +25% edge. Strong conviction.
-- "+50% (±45)" → could be anywhere from +5% to +95%. The edge probably exists but the size is uncertain.
-- "+10% (±20)" → might actually be -10% (underlay). No conviction — pass.
+```
+Horse         Rating  Market  Edge      Confidence
+Willy Pay     112     106     +6 (±3)  HIGH
+Tinitus       105     108     -3 (±3)  HIGH
+Gamblin Fever 106      98     +8 (±6)  LOW
+```
 
-**Connection to wagering-analytics:**
-- AN1 showed trifectas are 15-21% overlaid when prices are on top + fav in 2nd/3rd
-- A positive-Value horse on top × negative-Value horse (overbet fav) underneath = the structural overlay compounds
-- The Value % on individual horses translates to LARGER % overlays in exotics because the mispricing multiplies across positions
+**How group bias contributes:**
+
+Group-level A/E adjustments (from the Market Bias Layer) are converted to equivalent rating points and added to the model rating before computing Edge:
+
+```
+adjusted_rating = base_rating + sum(group_bias_pts)
+```
+
+Where `group_bias_pts` converts each factor's relative A/E to the rating scale. For example:
+- Jockey upgrade (relative A/E +4.7%): on a horse at 5/1, this probability shift ≈ +2-3 rating points
+- Blinkers OFF (relative A/E +9.3%): ≈ +4-5 rating points equivalent
+- Trainer claim (top, relative A/E +15%): ≈ +6-8 rating points equivalent
+
+The conversion depends on the horse's base odds (the same A/E shift produces more rating-point equivalent at longer odds where the probability curve is flatter).
+
+**Confidence band:**
+
+The ± range combines:
+1. Rating uncertainty from curve fit (residual_std / √n → ± rating points)
+2. Group bias confidence (Archie significance test — if Archie < 3.0 for a factor, its contribution widens the band rather than shifting the point estimate)
+
+**Conviction interpretation:**
+- **+6 (±3)** → even at worst case, +3 pts of edge. High conviction.
+- **+8 (±6)** → could be as low as +2 or as high as +14. Edge exists but size uncertain.
+- **+2 (±4)** → might actually be -2 (underlay). No conviction — pass or use only in exotic spreading.
+
+**Why rating points, not percentage overlay:**
+
+One unit system everywhere. The rating, the form trend, the stamina index, and the edge are all in the same scale. "+6 points of edge" has the same physical meaning as "+6 points of rating" — it's 6 × 58ms = 348ms at a sprint, or roughly 2 lengths faster than the market believes. No translation needed between model outputs.
 
 ### Form
 
