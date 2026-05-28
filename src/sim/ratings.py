@@ -87,8 +87,14 @@ def _get_anchor(surface: str, furlongs: float) -> tuple[float, float]:
 
     return 70000.0, 100.0
 
-# Relative A/E baselines (population A/E ≈ 0.80 for dirt/fast)
-BASELINE_AE = 0.800
+# Relative A/E baseline. After WA #19 fix (overround-normalized expected
+# wins in load_market_bias), population A/E ≈ 1.000 — a neutral trainer
+# scores exactly 1.0 instead of the takeout-biased 0.800. Multipliers
+# (trainer_ae / BASELINE_AE) remain numerically equivalent because both
+# changed in lockstep, but the displayed A/E values are now interpretable
+# directly: 1.20 means 20% better than expected, not "0.96 vs population
+# 0.80 means slightly above neutral."
+BASELINE_AE = 1.000
 
 # Class-level implied ratings on the universal scale.
 # "Main" surfaces (Dirt, Synthetic): anchor 100 = CLM $5K-$10K — from research

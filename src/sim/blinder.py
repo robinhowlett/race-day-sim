@@ -241,14 +241,33 @@ WITH race_starters AS (
     JOIN handycapper.starters s ON s.race_id = r.id
     WHERE r.track = %(track)s AND r.date = %(race_date)s
 ),
--- Trainer FTS record (point-in-time)
+-- Per-race overround for all races before this card.
+-- Used to normalize raw 1/(odds+1) probabilities so they sum to 1.0 per race
+-- (without normalization, the overround factor inflates expected_wins
+-- proportionally to takeout, making population A/E ~0.80 instead of 1.0).
+-- Materialized once and reused across all trainer-bias subqueries below.
+race_overround AS (
+    SELECT s.race_id,
+        SUM(1.0 / (s.odds + 1)) AS field_overround
+    FROM handycapper.starters s
+    JOIN handycapper.races r ON r.id = s.race_id
+    WHERE r.breed = 'TB'
+      AND r.date < %(race_date)s
+      AND r.number_of_runners >= 5
+      AND s.odds IS NOT NULL AND s.odds > 0
+    GROUP BY s.race_id
+),
+-- Trainer FTS record (point-in-time). Joins to race_overround to normalize
+-- expected_wins for field overround (raw 1/(odds+1) sums to ~1.17 with
+-- takeout, biasing population A/E to ~0.80 instead of 1.0).
 trainer_fts AS (
     SELECT s.trainer_last, s.trainer_first,
         COUNT(*) AS fts_starts,
         SUM(CASE WHEN s.official_position = 1 THEN 1 ELSE 0 END) AS fts_wins,
-        SUM(1.0 / (s.odds + 1)) AS fts_expected
+        SUM((1.0 / (s.odds + 1)) / NULLIF(ro.field_overround, 0)) AS fts_expected
     FROM handycapper.starters s
     JOIN handycapper.races r ON r.id = s.race_id
+    JOIN race_overround ro ON ro.race_id = s.race_id
     WHERE s.last_raced_date IS NULL
       AND POSITION('MAIDEN' IN r.type) > 0
       AND r.breed = 'TB'
@@ -260,16 +279,17 @@ trainer_fts AS (
       )
     GROUP BY s.trainer_last, s.trainer_first
 ),
--- Trainer claim record (point-in-time)
+-- Trainer claim record (point-in-time). Overround-normalized.
 trainer_claim AS (
     SELECT post.trainer_last, post.trainer_first,
         COUNT(*) AS claim_starts,
         SUM(CASE WHEN post.official_position = 1 THEN 1 ELSE 0 END) AS claim_wins,
-        SUM(1.0 / (post.odds + 1)) AS claim_expected
+        SUM((1.0 / (post.odds + 1)) / NULLIF(ro.field_overround, 0)) AS claim_expected
     FROM handycapper.starters claimed
     JOIN handycapper.races cr ON cr.id = claimed.race_id
     JOIN handycapper.starters post ON post.horse = claimed.horse
     JOIN handycapper.races pr ON pr.id = post.race_id
+    JOIN race_overround ro ON ro.race_id = post.race_id
     WHERE claimed.claimed = true
       AND cr.breed = 'TB' AND cr.date < %(race_date)s
       AND pr.date > cr.date AND pr.date <= cr.date + interval '180 days'
@@ -281,17 +301,19 @@ trainer_claim AS (
       )
     GROUP BY post.trainer_last, post.trainer_first
 ),
--- Trainer class drop record (point-in-time)
+-- Trainer class drop record (point-in-time). Overround-normalized.
 trainer_drop AS (
     SELECT sq.trainer_last, sq.trainer_first,
         COUNT(*) AS drop_starts,
         SUM(CASE WHEN sq.official_position = 1 THEN 1 ELSE 0 END) AS drop_wins,
-        SUM(1.0 / (sq.odds + 1)) AS drop_expected
+        SUM((1.0 / (sq.odds + 1)) / NULLIF(sq.field_overround, 0)) AS drop_expected
     FROM (
         SELECT s.trainer_last, s.trainer_first, s.official_position, s.odds, r.purse,
-            LAG(r.purse) OVER (PARTITION BY s.horse ORDER BY r.date) AS prev_purse
+            LAG(r.purse) OVER (PARTITION BY s.horse ORDER BY r.date) AS prev_purse,
+            ro.field_overround
         FROM handycapper.starters s
         JOIN handycapper.races r ON r.id = s.race_id
+        JOIN race_overround ro ON ro.race_id = s.race_id
         WHERE r.breed = 'TB' AND r.date < %(race_date)s
           AND r.number_of_runners >= 5
           AND s.horse IS NOT NULL AND s.odds IS NOT NULL AND s.odds > 0
@@ -302,14 +324,15 @@ trainer_drop AS (
     WHERE sq.prev_purse IS NOT NULL AND sq.purse < sq.prev_purse * 0.7
     GROUP BY sq.trainer_last, sq.trainer_first
 ),
--- Trainer layoff record (point-in-time: 90+ days off)
+-- Trainer layoff record (point-in-time: 90+ days off). Overround-normalized.
 trainer_layoff AS (
     SELECT s.trainer_last, s.trainer_first,
         COUNT(*) AS layoff_starts,
         SUM(CASE WHEN s.official_position = 1 THEN 1 ELSE 0 END) AS layoff_wins,
-        SUM(1.0 / (s.odds + 1)) AS layoff_expected
+        SUM((1.0 / (s.odds + 1)) / NULLIF(ro.field_overround, 0)) AS layoff_expected
     FROM handycapper.starters s
     JOIN handycapper.races r ON r.id = s.race_id
+    JOIN race_overround ro ON ro.race_id = s.race_id
     WHERE r.breed = 'TB' AND r.date < %(race_date)s
       AND r.number_of_runners >= 5
       AND s.last_raced_date IS NOT NULL
@@ -320,17 +343,19 @@ trainer_layoff AS (
       )
     GROUP BY s.trainer_last, s.trainer_first
 ),
--- Trainer surface switch record (point-in-time)
+-- Trainer surface switch record (point-in-time). Overround-normalized.
 trainer_switch AS (
     SELECT sq.trainer_last, sq.trainer_first,
         COUNT(*) AS switch_starts,
         SUM(CASE WHEN sq.official_position = 1 THEN 1 ELSE 0 END) AS switch_wins,
-        SUM(1.0 / (sq.odds + 1)) AS switch_expected
+        SUM((1.0 / (sq.odds + 1)) / NULLIF(sq.field_overround, 0)) AS switch_expected
     FROM (
         SELECT s.trainer_last, s.trainer_first, s.official_position, s.odds, r.surface,
-            LAG(r.surface) OVER (PARTITION BY s.horse ORDER BY r.date) AS prev_surface
+            LAG(r.surface) OVER (PARTITION BY s.horse ORDER BY r.date) AS prev_surface,
+            ro.field_overround
         FROM handycapper.starters s
         JOIN handycapper.races r ON r.id = s.race_id
+        JOIN race_overround ro ON ro.race_id = s.race_id
         WHERE r.breed = 'TB' AND r.date < %(race_date)s
           AND r.number_of_runners >= 5
           AND s.horse IS NOT NULL AND s.odds IS NOT NULL AND s.odds > 0

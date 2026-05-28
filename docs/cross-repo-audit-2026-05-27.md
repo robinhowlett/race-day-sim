@@ -429,7 +429,14 @@ Cross-zone fallback is structurally sound but relies on RKM-T1.2 being fixed fir
 ### Cross-cutting
 
 - **Date range chaos:** RKM scripts use 1997-2016, form computation 1991-2017, WCMI 1999-2017, trainer profiles 2005-2017, payoff models all data. CLAUDE.md inconsistencies. Audit each script and align to a documented standard (likely 1991-2017 with caveats for exotic data starting 1999).
-- **A/E denominators not normalized for overround** (WA #19): Population A/E ≈ 0.83 because takeout, not because trainers underperform. Profiles store raw `1/(odds+1)` sums. Consumers can misinterpret. Fix: normalize using V003's `win_prob`, not raw implied probability.
+- **A/E denominators not normalized for overround** (WA #19): ✅ FIXED 2026-05-28. `blinder.py:load_market_bias` now joins each trainer-bias subquery to a `race_overround` CTE and normalizes raw `1/(odds+1)` by the per-race overround. Each starter's `true_prob = (1/(odds+1)) / race_overround` sums to 1.0 per race instead of 1.17.
+
+  **Impact:**
+  - Population A/E shifts from 0.802 → 1.002 (verified empirically on 2014 TB, 350K starters). A neutral trainer now displays as A/E ≈ 1.0 instead of 0.8.
+  - `BASELINE_AE` in `ratings.py` updated 0.800 → 1.000 in lockstep so bias multipliers (`trainer_ae / BASELINE_AE`) are unchanged numerically.
+  - Five trainer dimensions affected: FTS, claim, drop, layoff, surface_switch. Sim sanity-tested on GP 2014-09-06 — output unchanged as expected.
+
+  Displayed A/E values are now directly interpretable: 1.20 = 20% better than expected, not "0.96 vs population 0.80 = slightly above neutral."
 - **Coupled entries treated as independent everywhere** (WA #11): V003, Stern, payoff, WCMI, trainer A/E all ignore coupling. Affects ~3-5% of US races.
 - **"Edge" defined three different ways across modules** (RDS C1): ✅ FIXED 2026-05-28. `payoff.py:edge_pct` renamed to `overlay_pct` (it's an overlay-percentage metric, not "edge in rating space"); `kelly.py` internal `edge` renamed to `ev_per_dollar` (per-dollar EV); `ratings.py:edge` retained as the canonical "edge" (rating-point distance from market in rating-point space); `horizontal.py:horizontal_advantage_pct` already unambiguous (takeout savings, not "edge"). Caller in `simulate_race_day.py` updated to read `overlay_pct`. Module docstrings now distinguish the three concepts explicitly.
 
