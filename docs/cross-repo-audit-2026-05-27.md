@@ -435,16 +435,47 @@ Cross-zone fallback is structurally sound but relies on RKM-T1.2 being fixed fir
 
 ### Race-Day-Sim specific
 
-- **`evaluate.py` exotic payoff math** (RDS H1): assumes uniform $1 per combo; breaks for asymmetric tickets. Different formula in `run_simulation.py:231` than `evaluate.py:59-63` for the same concept.
+- **`evaluate.py` exotic payoff math** (RDS H1): ✅ FIXED 2026-05-28 (deprecated). Module marked deprecated with `DeprecationWarning` on import; bugs documented in module docstring. Canonical evaluator is `SimDay._evaluate_bet` in `run_simulation.py` (deterministic, all bet types, official_position-aware, DB-authoritative payoffs from wps + exotics tables). Module retained for `simulate_race_day.py` import compatibility until PROTO-T3.7 (scaffold consolidation) decides cleanup.
 - **`kelly_exotic` formula** (RDS H5): mathematically incorrect — `edge / avg_payoff` is off by `b/(b+1)`. Under-stakes (safe direction) but doesn't match docstring.
-- **Pace thresholds are unit-naive across surfaces** (RDS M1): Calibrated on dirt (mean v0=64) but applied to turf (mean v0=55) without normalization. Turf races classified as CONTESTED when actually MODERATE.
-- **Pace second-clause is unreachable** (RDS M2): `pace.py:58-60` has dead code.
-- **MIN_EDGE_CONVICTION = 0** (RDS L1): Effectively no gate. With known edge inflation, passes too many candidates. Raise to 2-3 pts.
+- **Pace thresholds are unit-naive across surfaces** (RDS M1): ✅ FIXED 2026-05-28. `predict_pace` now scales gap thresholds by `field median v0 / dirt baseline (62.5)`. Turf field with median v0=54 gets proportionally tighter thresholds (turf 0.6 ft/s gap = same fraction of v0 as dirt 0.7 ft/s). Auto-scaling avoids the surface-specific calibration headache while preserving dirt behavior.
+- **Pace second-clause is unreachable** (RDS M2): ✅ FIXED 2026-05-28 (dead-code branch removed in same edit).
+- **MIN_EDGE_CONVICTION = 0** (RDS L1): ✅ FIXED 2026-05-28 (clarified, kept at 0; empirically validated). Renamed to `MIN_EDGE_CONVICTION_MARGIN` with explanatory comment. The constant is NOT a no-op — `worst_case > 0` is "band clear of zero," a defensible floor.
+
+  **Empirical validation (2026-05-28, 10 random days, 440 rated horses):**
+  - 8.9% of rated horses pass `worst > 0` → ~4 conviction picks/day (mean), max 9
+  - Threshold sensitivity is gradual, not cliff-like: `>0`→8.9%, `>2`→6.6%, `>5`→4.5%
+  - Edge distribution is heavily skewed negative (mean -7.6, median -5.3) — the conviction set is the right tail
+  - MIN_ODDS_WIN_BET = 3.0 binds 1 of 39 conviction picks (a 2/1 with worst +0.6 — correctly blocked since edge that thin at 2/1 is well inside takeout). Threshold validated.
+
+### RDS-T2.x — Longshot skew in conviction picks runs against favorite-longshot bias  **[NEW FINDING — 2026-05-28]**
+
+**Surfaced from MIN_EDGE_CONVICTION validation data:** 49% of conviction picks have odds ≥15/1, median 14.8/1. The model's "edge" picks cluster heavily in the longshot tail.
+
+**Why this is concerning:** The empirical favorite-longshot bias (FLB) is well-documented across pari-mutuel data:
+- Favorites win MORE than their odds-implied probability (public slightly underbets chalk)
+- Longshots win LESS than their odds-implied probability (public overbets longshots)
+
+A model that finds "edge" predominantly in the longshot tail is fighting that bias. Possible interpretations:
+1. The model correctly identifies specific mispriced longshots (and the bettor wins despite the population-level bias)
+2. The model has its own bias that overrates longshots — and is catching the same illusion the public falls for
+
+The latter is the more likely explanation given what the model can't see: workouts, trip notes, equipment changes, trainer intent, recent context. Longshots at 20/1+ often have those soft signals the public is using to discount the horse — signals the physics/form layer can't access.
+
+**This is a strong candidate for explaining part of the documented -42% ROI.** The model is calling "edge" where the market has soft information advantage.
+
+**Three responses, in priority order:**
+1. **(Long-term, principled)** Apply FLB correction at the rating-to-edge translation step. Multiply edge by an odds-dependent shrinkage factor calibrated from historical strike-rate bucketing.
+2. **(Interim, defensible)** Tighten the conviction threshold for longshots: require worst-case edge to scale with odds (e.g., `worst > 0` for chalk, `worst > 5` at 7-15/1, `worst > 10` at 15/1+).
+3. **(UI nudge, immediate)** Surface odds tier in conviction display with a flag for longshot picks ("verify against trip notes, equipment, recent form" prompt).
+
+**Severity:** HIGH (likely ROI-driving). Not a single quick fix — needs empirical FLB calibration.
 - **Jockey upgrade only detected for jockeys with ≥50 starts** (RDS L6): Apprentices systematically miss the UPGRADE classification.
 
 ### Wagering-Analytics specific
 
-- **Default takeout 0.20** (WA #12): Bet-type-agnostic fallback. CLAUDE.md promises 0.21/0.24 defaults but code doesn't implement.
+- **Default takeout 0.20** (WA #12): ✅ FIXED 2026-05-28. `populate_stern_fair.py` and `payoff.py:estimate_combo_value` and `horizontal.py:estimate_horizontal_value` all now use bet-type-specific defaults (WPS 0.17, EX/QU/DD 0.21, TRI/SUP/HI5 0.24, P3 0.20, P4 0.18, P5 0.15, P6 0.20). Caller can still override with explicit value. Lookup priority in `populate_stern_fair`: (track, bet_type) → (any, bet_type) → bet-type default → 0.21 fallback. Precision note added in code at all three sites: takeout is used only for informational fair-value displays — realized P&L reads actual paid amounts from `wps` + `exotics` tables, so fallback precision doesn't affect bet outcomes. A ±3 percentage point error in fallback rates moves fair-value estimates ~3-4%, dwarfed by other modeling uncertainties.
+
+- **Future enhancement (deferred):** parse Christopher Larmey's @derby1592 takeout PDF (`Takeout info 5-16-2026.pdf`) to add a 2026 effective-date snapshot. Would unlock: (a) time-versioned takeout records (~1% precision instead of ±3% with the 2009 snapshot alone), (b) **CAW-limited flags** as a per-(track, pool) market-structure signal — when CAWs are excluded from a pool, late-money composition differs, surfacing as a distinct overlay landscape, (c) jackpot/carryover type flags and specialty-wager attribution. The CAW flag is the most novel signal — not in the current data at all. Half-day of work; deferred because takeout precision isn't currently a binding constraint.
 - **Coupled entries / dead heats / late scratches not handled** (WA #13)
 - **Surface dummies all-zero in EXACTA/TRIFECTA models** (WA #14): `models/payoff_coefficients.json` shows `surface_T = surface_S = 0.0` with `p_value = NaN`. Surface effect silently dropped.
 - **Outliers** (WA #15): No winsorization for extreme payoffs in OLS bet types.
