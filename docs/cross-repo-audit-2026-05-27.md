@@ -12,7 +12,21 @@
 
 These directly cause inflated edges, future-data leakage, or incorrect probability computation. Likely responsible for the bulk of the 0/15 record.
 
-### RKM-T1.1 — Cross-track normalization is structurally inert
+### RKM-T1.1 — Cross-track normalization is structurally inert  **[PARTIALLY DISPROVEN — 2026-05-27]**
+
+**VERIFICATION RESULT (2026-05-27):** The audit's claim that the offsets are inert is WRONG. `rkm_track_offsets` has 104 rows (one per track) with a healthy distribution: range -2.80 to +1.28, std=0.83, with 59 tracks in the moderate (0.50-1.50) bucket and 20 in the large (1.50-3.00) bucket. Reference track is BEL (offset = 0.00 by design). 96.6% of `rkm_velocity_curves` rows have `adj_v0 ≠ v0`, average adjustment +0.87 ft/s. Confidence values vary (1.00 for high-shipping tracks down to <0.10 for thin ones).
+
+**What the audit got right:** `rkm_velocity_curves` has NO `track` column — curves ARE aggregated per (horse, surface, distance_zone). The "shipping horse pairs" approach as literally described in the spec cannot be the implementation.
+
+**What the audit got wrong:** The system DOES produce sensible offsets via some other path (possibly the orphaned `compute_group_priors` mentioned in audit RKM #10, or the simpler track-mean approach at lines 130-138). The track normalization is functional, not inert.
+
+**Statistical validity remains an open question.** Whether the offsets correctly capture track speed differences (vs being confounded with horse-quality bias, per RKM #12 — top barns shipping good horses to flagship tracks) requires a deeper read of the actual code path, which the audit did via code review only.
+
+**Updated severity:** Downgrade from HIGH to "investigation-needed" — the system isn't broken in the way the audit claimed, but its statistical correctness vs the original spec is unverified.
+
+---
+
+### RKM-T1.1 (original audit text below)
 
 **Files:** `rkm/src/rkm/adjustments.py:144-220`, `rkm/scripts/compute_adjustments.py:33-50`
 
