@@ -203,7 +203,14 @@ def estimate_combo_value(
     takeout when available for accurate fair value.
 
     Returns:
-        dict with projected_payoff, harville_fair, overlay_ratio, edge_pct
+        dict with projected_payoff, harville_fair, overlay_ratio, overlay_pct.
+
+        overlay_pct = (overlay_ratio − 1) × 100, i.e., the percentage by
+        which projected payoff exceeds Stern/Harville fair value. This is
+        DISTINCT from `edge` in ratings.py (rating-point distance from the
+        market in odds-implied rating space). Naming clarified in this module
+        per audit RDS C1 — overlay_pct is in payoff space, ratings.py:edge
+        is in rating-point space.
     """
     if takeout is None:
         takeout = _DEFAULT_TAKEOUT_BY_TYPE.get(bet_type, 0.21)
@@ -223,14 +230,14 @@ def estimate_combo_value(
 
     if projected is None:
         return {"projected_payoff": None, "harville_fair": float(harville_fair),
-                "overlay_ratio": None, "edge_pct": None}
+                "overlay_ratio": None, "overlay_pct": None}
 
     overlay = compute_overlay(projected, harville_fair)
-    edge_pct = (overlay - 1.0) * 100
+    overlay_pct = (overlay - 1.0) * 100
 
     return {
         "projected_payoff": round(float(projected), 2),
         "harville_fair": round(float(harville_fair), 2),
         "overlay_ratio": round(float(overlay), 3),
-        "edge_pct": round(float(edge_pct), 1),
+        "overlay_pct": round(float(overlay_pct), 1),
     }

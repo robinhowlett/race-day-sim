@@ -172,7 +172,7 @@ def print_value_combos(race_df, probs: dict, pools_for_race: dict):
                         "projected": value["projected_payoff"],
                         "fair": value["harville_fair"],
                         "overlay": value["overlay_ratio"],
-                        "edge": value["edge_pct"],
+                        "overlay_pct": value["overlay_pct"],
                         "fav_pos": fav_pos,
                     })
 
@@ -187,7 +187,7 @@ def print_value_combos(race_df, probs: dict, pools_for_race: dict):
         for c in top:
             fp = str(c["fav_pos"]) if c["fav_pos"] else "OUT"
             print(f"  {c['combo']:<12} {c['odds']:<14} {c['harv_prob']:>6.4f} "
-                  f"${c['projected']:>6.0f} ${c['fair']:>6.0f} {c['overlay']:>6.2f}x {c['edge']:>+5.1f}% {fp:>6}")
+                  f"${c['projected']:>6.0f} ${c['fair']:>6.0f} {c['overlay']:>6.2f}x {c['overlay_pct']:>+5.1f}% {fp:>6}")
 
 
 def main():

@@ -360,7 +360,12 @@ jockey_career AS (
           JOIN handycapper.races prev_r ON prev_r.id = prev_s.race_id AND prev_r.date < %(race_date)s
       )
     GROUP BY s.jockey_last, s.jockey_first
-    HAVING COUNT(*) >= 50
+    -- 20-start floor: balances statistical meaningfulness against apprentice
+    -- coverage (5lb-bug riders typically have low career counts). Was 50 —
+    -- empirical: 1,567 / 3,779 apprentices (41 pct) had >= 50 starts; lowering
+    -- to 20 captures 1,861 (49 pct) without much added noise. Below 20,
+    -- win-rate is dominated by 0-vs-1-win statistical jitter.
+    HAVING COUNT(*) >= 20
 ),
 -- Jockey trailing 12m at this track (point-in-time)
 jockey_track AS (

@@ -431,7 +431,7 @@ Cross-zone fallback is structurally sound but relies on RKM-T1.2 being fixed fir
 - **Date range chaos:** RKM scripts use 1997-2016, form computation 1991-2017, WCMI 1999-2017, trainer profiles 2005-2017, payoff models all data. CLAUDE.md inconsistencies. Audit each script and align to a documented standard (likely 1991-2017 with caveats for exotic data starting 1999).
 - **A/E denominators not normalized for overround** (WA #19): Population A/E ≈ 0.83 because takeout, not because trainers underperform. Profiles store raw `1/(odds+1)` sums. Consumers can misinterpret. Fix: normalize using V003's `win_prob`, not raw implied probability.
 - **Coupled entries treated as independent everywhere** (WA #11): V003, Stern, payoff, WCMI, trainer A/E all ignore coupling. Affects ~3-5% of US races.
-- **"Edge" defined three different ways across modules** (RDS C1): ratings.py rating points, payoff.py % of fair value, horizontal.py takeout difference. Rename to disambiguate.
+- **"Edge" defined three different ways across modules** (RDS C1): ✅ FIXED 2026-05-28. `payoff.py:edge_pct` renamed to `overlay_pct` (it's an overlay-percentage metric, not "edge in rating space"); `kelly.py` internal `edge` renamed to `ev_per_dollar` (per-dollar EV); `ratings.py:edge` retained as the canonical "edge" (rating-point distance from market in rating-point space); `horizontal.py:horizontal_advantage_pct` already unambiguous (takeout savings, not "edge"). Caller in `simulate_race_day.py` updated to read `overlay_pct`. Module docstrings now distinguish the three concepts explicitly.
 
 ### Race-Day-Sim specific
 
@@ -480,7 +480,7 @@ The latter is the more likely explanation given what the model can't see: workou
 3. **(UI nudge, immediate)** Surface odds tier in conviction display with a flag for longshot picks ("verify against trip notes, equipment, recent form" prompt).
 
 **Severity:** HIGH (likely ROI-driving). Not a single quick fix — needs empirical FLB calibration.
-- **Jockey upgrade only detected for jockeys with ≥50 starts** (RDS L6): Apprentices systematically miss the UPGRADE classification.
+- **Jockey upgrade only detected for jockeys with ≥50 starts** (RDS L6): ✅ FIXED 2026-05-28. Lowered to ≥20 starts in `blinder.py:jockey_career` CTE. Empirical: 1,567 / 3,779 apprentices (41%) had ≥50 career starts; lowering to 20 captures 1,861 (49%). The 20-start floor balances statistical meaningfulness (below ~20 starts, win rate is dominated by 0-vs-1-win jitter) against apprentice coverage. Documented inline.
 
 ### Wagering-Analytics specific
 
@@ -494,7 +494,7 @@ The latter is the more likely explanation given what the model can't see: workou
 - **Claim query double-counts horses claimed multiple times** (WA #7): Per-claim-event ROW_NUMBER, not per-horse.
 - **Drop/layoff filtered to dirt/fast only** (WA #8): Other dimensions aren't. Composites are incoherent.
 - **Dimensions are not independent** (WA #9): layoff×drop, layoff×switch overlap. Composite scoring misuses them.
-- **Velocity range filter inconsistent** (RKM #6): curves.py 30-70, form.py 30-85. A burst >70 admitted to current_v0 but rejected from career.
+- **Velocity range filter inconsistent** (RKM #6): ✅ FIXED 2026-05-28. `form.py:MAX_VELOCITY` lowered 85.0 → 70.0 to match `curves.py:MAX_VELOCITY`. Empirical: 0.016% of `indiv_fractionals` exceed 70 ft/s (1,632 of 10M sampled), max observed 2,671 ft/s (clearly bad data — that's ~1,800 mph). 70 was already the correct value; form.py's 85 was the inconsistency. Note: 85 was used in `curves.py` as a separate sanity ceiling on the FITTED v0 (regression intercept can exceed observed velocity); that 85 ceiling stays put.
 - **v0 extrapolated from midpoint velocities** (RKM #7): No near-zero anchor. Conflates start speed with stamina.
 
 ---
