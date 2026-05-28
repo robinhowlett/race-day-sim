@@ -957,7 +957,7 @@ The `doUpdate()` clause sets only `track_name, final_time, final_millis, dead_he
 
 **Severity:** HIGH
 
-### IMP-T5.2 — `cancelled` and `races` rows can co-exist for the same (date, track, number)
+### IMP-T5.2 — `cancelled` and `races` rows can co-exist for the same (date, track, number) [FIXED 2026-05-28]
 
 **File:** `RaceWriter.java:126-152, 292-316`
 
@@ -1083,7 +1083,7 @@ GROUP BY race_id HAVING COUNT(*) >= 2;
 
 **Severity:** HIGH (silently wrong official positions)
 
-### CP-T6.2 — Trainer/Owner program-less fallback breaks outer loop after one assignment
+### CP-T6.2 — Trainer/Owner program-less fallback breaks outer loop after one assignment [FIXED 2026-05-28]
 
 **File:** `ChartParser.java:505-510, 526-531`
 
@@ -1093,7 +1093,7 @@ GROUP BY race_id HAVING COUNT(*) >= 2;
 
 **Severity:** HIGH (silent data loss for older chart formats)
 
-### CP-T6.3 — Time-format regex tolerates malformed times (`.` matches `:`)
+### CP-T6.3 — Time-format regex tolerates malformed times (`.` matches `:`) [FIXED 2026-05-28]
 
 **File:** `FractionalTimes.java:21`
 
@@ -1103,7 +1103,7 @@ The `.` in `\d\d.\d\d` is unescaped — matches any character. Spurious matches 
 
 **Severity:** HIGH
 
-### CP-T6.4 — `IndividualTime.parse` rejects times ≥ 60 seconds with minutes
+### CP-T6.4 — `IndividualTime.parse` rejects times ≥ 60 seconds with minutes [FIXED 2026-05-28]
 
 **File:** `running_line/IndividualTime.java:14`
 
