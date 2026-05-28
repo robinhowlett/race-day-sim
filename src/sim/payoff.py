@@ -165,6 +165,26 @@ def compute_overlay(
     return projected_payoff / harville_fair
 
 
+# Bet-type-specific default takeouts when caller doesn't pass one.
+# Approximate North American averages.
+#
+# Precision note: takeout enters this codebase only through informational
+# fair-value displays. Bet evaluation reads actual paid amounts from the
+# wps + exotics tables, so realized P&L is unaffected by the fallback used
+# here. A ±3 percentage point error in fallback rates moves fair-value
+# estimates ~3-4%, dwarfed by other modeling uncertainties.
+# Future enhancement: time-versioned takeouts (parsing Larmey's @derby1592
+# takeout PDF would add CAW-limited flags, jackpot/carryover type flags, and
+# specialty-wager attribution) — deferred.
+_DEFAULT_TAKEOUT_BY_TYPE = {
+    "WIN": 0.17, "PLACE": 0.17, "SHOW": 0.17,
+    "EXACTA": 0.21, "QUINELLA": 0.21,
+    "TRIFECTA": 0.24, "SUPERFECTA": 0.24, "HI_5": 0.24,
+    "DAILY_DOUBLE": 0.21,
+    "PICK_3": 0.20, "PICK_4": 0.18, "PICK_5": 0.15, "PICK_6": 0.20,
+}
+
+
 def estimate_combo_value(
     combo_odds: list[float],
     harville_prob: float,
@@ -172,14 +192,21 @@ def estimate_combo_value(
     field_size: int,
     hhi: float,
     fav_position: int | None,
-    takeout: float = 0.24,
+    takeout: float | None = None,
     bet_type: str = "TRIFECTA",
 ) -> dict:
     """Full value assessment for a single exotic combination.
 
+    If `takeout` is not supplied, uses a bet-type default
+    (TRIFECTA: 0.24, EXACTA: 0.21, PICK_4: 0.18, etc.) — see
+    _DEFAULT_TAKEOUT_BY_TYPE. Caller should pass actual track/race
+    takeout when available for accurate fair value.
+
     Returns:
         dict with projected_payoff, harville_fair, overlay_ratio, edge_pct
     """
+    if takeout is None:
+        takeout = _DEFAULT_TAKEOUT_BY_TYPE.get(bet_type, 0.21)
     harville_fair = (1.0 - takeout) / harville_prob if harville_prob > 0 else 0
 
     if bet_type == "EXACTA" and len(combo_odds) >= 2:

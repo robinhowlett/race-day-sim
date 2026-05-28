@@ -114,10 +114,26 @@ def evaluate_leg_selections(
     }
 
 
+# Bet-type-specific default takeouts. Approximate NA averages — caller
+# should pass actual track/race takeout when available.
+#
+# Precision note: takeout is informational only here (synthetic-parlay
+# advantage display, fair-payoff approximation). P&L is computed from
+# actual paid amounts at evaluation. Future enhancement: time-versioned
+# takeouts from Larmey's @derby1592 takeout PDF — deferred.
+_DEFAULT_HORIZONTAL_TAKEOUT_BY_LEGS = {
+    2: 0.21,  # DAILY_DOUBLE
+    3: 0.20,  # PICK_3
+    4: 0.18,  # PICK_4
+    5: 0.15,  # PICK_5
+    6: 0.20,  # PICK_6
+}
+
+
 def estimate_horizontal_value(
     legs: list[dict],
     pool_size: float,
-    takeout: float = 0.25,
+    takeout: float | None = None,
 ) -> dict:
     """Estimate value of a horizontal ticket.
 
@@ -129,12 +145,16 @@ def estimate_horizontal_value(
             is biased upward by the takeout factor and produces pessimistic
             payoff estimates.
         pool_size: Pick N pool size
-        takeout: horizontal pool takeout rate
+        takeout: pool takeout. If not supplied, uses a default by leg count
+            (DD=0.21, P3=0.20, P4=0.18, P5=0.15, P6=0.20).
 
     Returns:
         dict with per-leg equity assessment, combined parlay probability,
         estimated payoff, and comparison to synthetic parlay takeout.
     """
+    if takeout is None:
+        takeout = _DEFAULT_HORIZONTAL_TAKEOUT_BY_LEGS.get(len(legs), 0.20)
+
     leg_assessments = []
     parlay_prob = 1.0
     any_stop_sign = False

@@ -28,9 +28,23 @@ from sim.ratings import format_race_ratings
 
 # --- Protocol thresholds (deterministic) ---
 
-MIN_EDGE_CONVICTION = 0  # edge - band must be > 0 for conviction
+# Conviction = (edge - band) > MIN_EDGE_CONVICTION_MARGIN.
+# The "edge - band > 0" form (margin = 0) means "even at the lower end of the
+# model's confidence band, the edge is still positive." That's a defensible
+# floor: the margin doesn't say "edge above some arbitrary number," it says
+# "the band is clear of zero."
+#
+# Bumping this to 1-3 would tighten the gate further but is empirically
+# unjustified without measuring the actual worst-case distribution after the
+# RDS-T1.1/T1.2/T1.3/T1.4 fixes. With those fixes reducing edge inflation,
+# the band-clear-of-zero gate already captures the real-conviction set.
+# Future calibration: sample worst-case distribution across a multi-day batch
+# and pick a margin that produces a reasonable conviction-pick density.
+MIN_EDGE_CONVICTION_MARGIN = 0.0
+MIN_EDGE_CONVICTION = MIN_EDGE_CONVICTION_MARGIN  # legacy alias
+
 MIN_ODDS_WIN_BET = 3.0  # don't win bet below this price
-MIN_HORIZONTAL_CONVICTION_LEGS = 2  # need opinions in 2+ legs
+MIN_HORIZONTAL_CONVICTION_LEGS = 2  # need opinions in 2+ legs (informational, not gating — see PROTO-T3.13)
 MIN_FIELD_SIZE_VERTICALS = 7  # skip verticals in tiny fields
 MIN_RATED_FRACTION = 0.4  # at least 40% of field must be rated
 

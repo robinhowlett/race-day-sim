@@ -1,9 +1,42 @@
-"""Post-race evaluation — compare bets to actual results."""
+"""DEPRECATED — Post-race evaluation, superseded by SimDay._evaluate_bet.
+
+This module's functions are NOT called by `run_simulation.py` (the canonical
+scaffold). Only `simulate_race_day.py` imports them, and even that script
+doesn't actually invoke them (dead import).
+
+Known bugs in this module that are CORRECT in run_simulation.py:
+
+  - `evaluate_race` uses `(winner_odds + 1) × stake` for WIN payouts. This
+    is mathematically equivalent to per-$2 WPS payouts but doesn't honor
+    track-specific dead-heat splits, minimum payoffs, or coupled-entry
+    grouping. `run_simulation.py:_evaluate_bet` reads from the `wps` table
+    instead.
+  - Exotic payoff math: `payoff × (cost / n_combinations)` divides by the
+    full ticket size, but should divide by the number of combos that
+    actually MATCH the result (typically 1 for a single ordered combo).
+  - Uses `finish_order` indices, not `official_position` — DQs not honored.
+  - Doesn't support QUINELLA, DAILY_DOUBLE, PICK_N (silent zero payout).
+
+Use `SimDay._evaluate_bet` from `run_simulation.py` instead. It's the
+deterministic (bet, race_data) → (hit, payout) pure function with all
+bet types supported and DB-authoritative payoffs.
+
+This module will be removed when PROTO-T3.7 (scaffold consolidation) is
+resolved. Until then, retained for `simulate_race_day.py` import compatibility.
+"""
+
+import warnings as _warnings
 
 import numpy as np
 
 
 def evaluate_race(bets: dict, results: dict, bankroll: float) -> dict:
+    _warnings.warn(
+        "sim.evaluate.evaluate_race is deprecated and contains math bugs. "
+        "Use SimDay._evaluate_bet (run_simulation.py) instead. See module docstring.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     """Evaluate bets against actual race results.
 
     Args:
@@ -86,7 +119,12 @@ def evaluate_race(bets: dict, results: dict, bankroll: float) -> dict:
 
 
 def day_summary(race_results: list[dict], starting_bankroll: float) -> dict:
-    """Summarize a full simulated day."""
+    """Summarize a full simulated day. DEPRECATED — see module docstring."""
+    _warnings.warn(
+        "sim.evaluate.day_summary is deprecated. Run-simulation prints its own summary.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     total_invested = sum(r["invested"] for r in race_results)
     total_returned = sum(r["returned"] for r in race_results)
     races_played = sum(1 for r in race_results if not r["passed"])
