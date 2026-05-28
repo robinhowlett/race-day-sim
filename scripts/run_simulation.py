@@ -371,6 +371,44 @@ class SimDay:
 
         return {"equity_table": equity_table, "baskets": baskets}
 
+    @staticmethod
+    def _flb_warning(opinion_class: str, odds: float, edge: float, worst: float) -> str | None:
+        """Generate a favorite-longshot-bias warning when a conviction pick
+        sits in the longshot tail.
+
+        Empirically (handycapper TB), longshots win LESS than odds-implied
+        probability — the public over-bets longshots. A model finding "edge"
+        in this tier is fighting the population bias, so the conviction
+        needs to come from specific information the model genuinely has,
+        not from generic edge calculation. See RDS-T2.x in audit doc.
+
+        Returns None for chalk picks (FLB is in the model's favor there).
+        """
+        if odds is None or odds <= 0:
+            return None
+        # CHALK: odds < 7 — public under-bets favorites; FLB works WITH us
+        if odds < 7:
+            return None
+        # MID: 7 ≤ odds < 15 — neutral zone, no FLB warning
+        if odds < 15:
+            return None
+        # LONGSHOT: odds ≥ 15 — public over-bets longshots; FLB runs AGAINST us
+        if opinion_class == "STRONG_SPECIFIC":
+            return (
+                f"longshot conviction (odds {odds:.1f}, worst-case +{worst:.1f}): "
+                f"model is highly confident, but empirical favorite-longshot bias "
+                f"runs against longshots winning. Verify the model's edge against "
+                f"trip notes / equipment / recent works the simulator can't see."
+            )
+        # MODERATE_SPECIFIC at longshot odds: thin conviction, FLB risk
+        return (
+            f"longshot pick on thin conviction (odds {odds:.1f}, worst-case +{worst:.1f}): "
+            f"empirical favorite-longshot bias runs against longshots winning, AND "
+            f"the model's worst-case is just barely positive. High FLB risk — "
+            f"prefer a horizontal leg over a standalone bet, and treat as suggestive "
+            f"unless you have specific information confirming the edge."
+        )
+
     def classify_opinion(self, rn: int) -> dict:
         """PROTO-T3.6: Classify the model's opinion in this race per
         simulation-protocol.md Step E.1.
@@ -391,6 +429,7 @@ class SimDay:
             "rationale": "",
             "recommended": "PASS",
             "hint": None,
+            "flb_warning": None,
             "details": {},
         }
 
@@ -450,6 +489,12 @@ class SimDay:
                     f"EXACTA/TRIFECTA key #{top['program']} (odds {top['odds']:.1f} below "
                     f"{MIN_ODDS_WIN_BET} WIN floor — express via exotic)"
                 )
+            result["flb_warning"] = self._flb_warning(
+                "STRONG_SPECIFIC",
+                float(top["odds"]) if pd.notna(top["odds"]) else 0,
+                float(top["edge"]),
+                float(top["worst_case"]),
+            )
             result["details"] = {"key_program": str(top["program"]), "edge": float(top["edge"])}
             return result
 
@@ -524,6 +569,12 @@ class SimDay:
             result["recommended"] = (
                 f"horizontal leg (single or A/B with #{top['program']}) — "
                 f"sequence context can add value the standalone bet lacks"
+            )
+            result["flb_warning"] = self._flb_warning(
+                "MODERATE_SPECIFIC",
+                float(top["odds"]) if pd.notna(top["odds"]) else 0,
+                float(top["edge"]),
+                float(top["worst_case"]),
             )
             result["details"] = {"key_program": str(top["program"]), "edge": float(top["edge"])}
             return result
@@ -1234,6 +1285,8 @@ def main():
         print(f"    Recommended: {opinion['recommended']}")
         if opinion.get("hint"):
             print(f"    Hint:        {opinion['hint']}")
+        if opinion.get("flb_warning"):
+            print(f"    FLB warning: {opinion['flb_warning']}")
 
         proposals = sim.propose_ticket_structures(rn, opinion)
         if not proposals:

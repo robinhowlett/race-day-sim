@@ -484,9 +484,11 @@ The latter is the more likely explanation given what the model can't see: workou
 **Three responses, in priority order:**
 1. **(Long-term, principled)** Apply FLB correction at the rating-to-edge translation step. Multiply edge by an odds-dependent shrinkage factor calibrated from historical strike-rate bucketing.
 2. **(Interim, defensible)** Tighten the conviction threshold for longshots: require worst-case edge to scale with odds (e.g., `worst > 0` for chalk, `worst > 5` at 7-15/1, `worst > 10` at 15/1+).
-3. **(UI nudge, immediate)** Surface odds tier in conviction display with a flag for longshot picks ("verify against trip notes, equipment, recent form" prompt).
+3. **(UI nudge, immediate)** ✅ DONE 2026-05-28. `_flb_warning()` helper on `SimDay` emits per-opinion FLB warnings when conviction-pick odds ≥15/1. STRONG_SPECIFIC longshots get a "verify against trip notes / equipment / recent works" prompt; MODERATE_SPECIFIC longshots get a stronger "thin conviction in danger zone" warning recommending horizontal-leg use over standalone bets. Surfaced as `FLB warning:` line in the OPINIONS BY RACE display.
 
-**Severity:** HIGH (likely ROI-driving). Not a single quick fix — needs empirical FLB calibration.
+**Status:** UI nudge done. Long-term FLB correction (option 1) remains the substantive ROI-moving work — captured in completion-plan.md Sprint 4.
+
+**Severity:** HIGH (likely ROI-driving). The UI nudge surfaces the issue every run; the empirical correction needs separate focused work.
 - **Jockey upgrade only detected for jockeys with ≥50 starts** (RDS L6): ✅ FIXED 2026-05-28. Lowered to ≥20 starts in `blinder.py:jockey_career` CTE. Empirical: 1,567 / 3,779 apprentices (41%) had ≥50 career starts; lowering to 20 captures 1,861 (49%). The 20-start floor balances statistical meaningfulness (below ~20 starts, win rate is dominated by 0-vs-1-win jitter) against apprentice coverage. Documented inline.
 
 ### Wagering-Analytics specific
