@@ -42,7 +42,15 @@ These directly cause inflated edges, future-data leakage, or incorrect probabili
 
 **Severity:** HIGH. Without working track normalization, `adj_v0` isn't actually cross-track comparable, which means rating comparisons across tracks are meaningless.
 
-### RKM-T1.2 — Bare horse name join ignores identity disambiguation
+### RKM-T1.2 — Bare horse name join ignores identity disambiguation  **[CONFIRMED — 2026-05-27]**
+
+**VERIFICATION RESULT (2026-05-27):** Confirmed. 2.25% of horse names have multiple birth-year disambiguations in `rkm_velocity_curves` (7,438 names representing 14,876+ distinct horses). Concrete demonstration: "Capo" has 3 distinct horses (1991, 2001, 2011 birth years) with 5 separate curves. Bare-name join produces 80 matched starter rows when only 63 actual Capo starts exist — a 17-row (27%) inflation for that one name. The bug exists and propagates.
+
+**Severity confirmed at HIGH.** Fix is straightforward: either (a) add `horse_key` to derived tables that consumers join on, or (b) require `vc.first_race ≤ r.date ≤ vc.last_race` in the join condition to date-disambiguate.
+
+---
+
+### RKM-T1.2 (original audit text below)
 
 **Files:** `rkm/scripts/compute_adjustments.py:36`, `rkm/scripts/compute_situations.py:40`
 
