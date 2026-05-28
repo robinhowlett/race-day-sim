@@ -27,7 +27,7 @@ These are code-fixes-shipped that need a long-running compute job to materialize
 |---|---|
 | PROTO-T3.4 | Press mechanic — code multi-cost combos (`Bet.combinations` with per-combo multipliers and a `Basket` class) or keep as judgment guidance? |
 | PROTO-T3.7 | Two scaffolds (`run_simulation.py` vs `simulate_race_day.py`) — consolidate or keep both? |
-| PROTO-T3.9 | ITP concepts (`kill_shot`, `hurdle`, `basket`, `win_only`) — encode as enforceable rules or document as guidance? |
+| PROTO-T3.9 | ITP concepts — kill_shot done (empirically validated, encoded); hurdle done (per-leg strategy classification + structural-fit notes); basket and win-only DEFERRED (need DB-backed analysis: choice-rank FLB curve and pace-conditional speed-and-fade outcome distribution). |
 
 **Recommendation:** Single-session conversation covering all three. They share a common axis: "what belongs in code vs in the bettor's head?" Likely outcomes: T3.4 → code press support; T3.7 → consolidate to `run_simulation.py`; T3.9 → encode `kill_shot` as a structural validation, leave the others as guidance.
 
@@ -97,6 +97,9 @@ These are real findings but live in upstream repos. Fixing them changes the data
 7. **RKM-T1.4 fix**: rewrite `compute_form_at_date` to use trailing career baseline. **Run the form recompute.** — 1 session (+ overnight compute)
 8. **WA #14 surface dummies investigation + re-fit** — 1 session
 9. **WA-T1.3 Pick 5/6 OLS rebuild** with carryover feature — 1 session
+10. **PROTO-T3.9 win-only encoding** — multi-dimensional DB validation (pace_scenario × distance_zone × surface × age_class) of the SPEED_AND_FADE → "wins or runs out" hypothesis. Encode as a soft note ONLY in the buckets where the empirical pattern holds (likely: dirt sprints with CONTESTED pace, older horses, mid-class). ~half session.
+11. **Choice-rank FLB curve** — for each `choice` rank (1, 2, 3, ...), measure A/E (actual wins ÷ implied-from-odds wins). Tells us whether the favorite label specifically attracts a default-bet pattern beyond what the general FLB curve implies, or whether all ranks are smoothly calibrated by the public. Informs whether per-rank shrinkage factors are needed (in addition to the per-odds-tier FLB correction in Sprint 4). ~half session.
+12. **PROTO-T3.9 basket detection** — aggregate exposure across multiple bets sharing a primary key. Compute per-bet EV contribution and flag redundant equity (multiple bets capturing the same probability mass). Catches the "+3 edge conviction expressed as 5 bets" over-investment trap. ~30 min once Sprint 1-2 hurdle/exposure scaffolding is in place.
 
 ### Sprint 4 (the substantive piece, multi-session)
 

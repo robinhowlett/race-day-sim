@@ -722,12 +722,23 @@ Notes interact cleanly with downstream soft checks: a STRONG_NEGATIVE recommenda
 
 **Verified:** Tested on R2 of GP 2014-09-06 (fav #3 at 2.3). Kill-shot pattern (`EXACTA 3 / 7,1,2`) triggers the note with all three empirical numbers; correct-direction pattern (`EXACTA 7 / 3,1`) does not.
 
-**Other ITP concepts (deferred):**
-- **Hurdle** — judgment, can't be encoded
-- **Basket of bets** — depends on PROTO-T3.4 press mechanic decision
-- **Win-only horses** — codable as a decay-rate + speed-fade-profile flag, but needs empirical validation similar to kill-shot before encoding
+**Hurdle (added 2026-05-28):** Implemented as `_hurdle_notes()` for horizontal bets — descriptive, not prescriptive. Each leg gets a strategy classification (SINGLE / NORMAL / SPREAD-EQUITY / SURVIVE / NORMAL-WIDE) based on selection structure, plus a structural-fit assessment (APPROPRIATE / WEAK / NEUTRAL) computed from the favorite's market-vs-model mispricing magnitude.
 
-**Severity:** MEDIUM → PARTIALLY FIXED. Hurdle/basket/win-only still open as design questions.
+  - **SINGLE** (k=1): one horse in the leg
+  - **NORMAL** (k=2-3, includes fav): standard A/B with chalk
+  - **SPREAD-EQUITY** (k=2-3, excludes fav, OR k≥4 excludes fav): contrarian play. APPROPRIATE when fav market_P − model_P > 5pp (favorite meaningfully overbet); WEAK when < 2pp.
+  - **SURVIVE** (k ≥ N−1): using most of the field. APPROPRIATE when fav overbet > 10pp OR rated coverage < 40 pct; WEAK otherwise.
+  - **NORMAL-WIDE** (k ≥ 4, includes fav): expensive coverage; flagged WEAK conservatively.
+
+  Per-leg notes surface mispricing magnitude when meaningful (≥1.5pp). Ticket-level mix summary shows distribution (e.g., "1 SINGLE, 2 NORMAL, 1 SPREAD-EQUITY"). When ≥2 legs flagged WEAK, summary warns: ITP says "treat horizontals like win bets — don't spread to survive without a structural reason."
+
+  This is the "spreading to feel safe" anti-pattern check: a wide spread with no underlying overlay signal is the exact failure mode ITP cautions against.
+
+**Win-only (deferred to Sprint 3):** Codable as decay-rate + speed-fade-profile flag, BUT requires multi-dimensional empirical validation across (pace_scenario × distance_zone × surface × age_class) before encoding. Pace alone isn't sufficient — a SPEED_AND_FADE horse can wire in LONE_SPEED, fade in CONTESTED. Needs DB-backed analysis.
+
+**Basket (added 2026-05-28):** Different concept from press (T3.4). Basket = one strategic opinion expressed across multiple pool types (WIN + EXACTA + TRIFECTA all keyed on same horse). Press = same total stake weighted across combos within one bet. Basket detection deferred — needs aggregate-exposure-vs-conviction-EV analysis to catch the over-investment trap (registering 5 bets on +3-edge conviction). ~30 min when prioritized.
+
+**Severity:** MEDIUM → PARTIALLY FIXED. Kill-shot encoded; hurdle encoded; win-only deferred for empirical validation; basket deferred for aggregate-EV analysis.
 
 ### PROTO-T3.10 — FTS rule contradiction across docs
 

@@ -1113,6 +1113,166 @@ class SimDay:
             )
         return notes
 
+    def _classify_leg_strategy(self, race: int, leg_programs: list) -> dict:
+        """Classify a single leg's strategy mode based on selection structure.
+
+        Returns dict with:
+            mode: 'SINGLE' | 'NORMAL' | 'SPREAD-EQUITY' | 'SURVIVE' | 'NORMAL-WIDE'
+            n_selected: count of selections in this leg
+            n_field:    field size of this leg's race
+            includes_fav: whether the favorite is in the selections
+            mispricing: float or None — market P(fav) − model P(fav).
+                Positive = favorite overbet (model says they should be longer).
+                Negative = favorite underbet.
+            structural_fit: 'APPROPRIATE' | 'WEAK' | 'NEUTRAL'
+                — does the strategy mode match what mispricing justifies?
+        """
+        race_df = self.card[self.card["race_number"] == race]
+        n_field = len(race_df) if not race_df.empty else 0
+        k = len(leg_programs)
+        fav_pgm = self._favorite_in_race(race)
+        includes_fav = fav_pgm is not None and str(fav_pgm) in [str(p) for p in leg_programs]
+
+        # Strategy mode by structure
+        if k == 1:
+            mode = "SINGLE"
+        elif n_field > 0 and k >= n_field - 1:
+            mode = "SURVIVE"
+        elif k <= 3:
+            mode = "NORMAL" if includes_fav else "SPREAD-EQUITY"
+        else:  # k >= 4
+            mode = "NORMAL-WIDE" if includes_fav else "SPREAD-EQUITY"
+
+        # Compute mispricing magnitude on the favorite for this leg.
+        # Uses combined_probs (model + odds + Benter) — combined.benter is the
+        # blended model+market estimate, so we compare market-only to a
+        # model-only proxy. For the model proxy we use cp["model"] when
+        # available; falls back to None when no curves.
+        mispricing = None
+        try:
+            cp = self.combined_probs(race)
+            if cp.get("benter") is not None and fav_pgm is not None:
+                programs_list = cp["programs"]
+                if str(fav_pgm) in programs_list:
+                    fav_idx = programs_list.index(str(fav_pgm))
+                    market_p = float(cp["odds_probs"][fav_idx])
+                    model_p  = float(cp["model"][fav_idx]) if cp["model"] is not None else None
+                    if model_p is not None:
+                        mispricing = market_p - model_p
+        except Exception:
+            mispricing = None
+
+        # Structural fit assessment
+        structural_fit = "NEUTRAL"
+        if mode in ("SPREAD-EQUITY",):
+            # Justified when favorite is meaningfully overbet
+            if mispricing is not None and mispricing > 0.05:
+                structural_fit = "APPROPRIATE"
+            elif mispricing is not None and mispricing < 0.02:
+                structural_fit = "WEAK"
+        elif mode == "SURVIVE":
+            # Justified when favorite is strongly overbet OR coverage is thin
+            try:
+                rated_frac = self.race_summary(race).get("rated_fraction", 1.0)
+            except Exception:
+                rated_frac = 1.0
+            big_overbet = mispricing is not None and mispricing > 0.10
+            thin_coverage = rated_frac < 0.4
+            if big_overbet or thin_coverage:
+                structural_fit = "APPROPRIATE"
+            else:
+                structural_fit = "WEAK"
+        elif mode == "NORMAL-WIDE":
+            # Wide spreads including the favorite are expensive; only justified
+            # when the field is genuinely wide-open (multiple positive edges)
+            structural_fit = "WEAK"  # conservative default — bettor can ignore
+
+        return {
+            "mode": mode,
+            "n_selected": k,
+            "n_field": n_field,
+            "includes_fav": includes_fav,
+            "mispricing": mispricing,
+            "structural_fit": structural_fit,
+        }
+
+    def _hurdle_notes(self, race: int, bet_type: str, programs) -> list[str]:
+        """PROTO-T3.9 hurdle: classify each horizontal leg's strategy mode and
+        flag where structure doesn't match what the math would justify.
+
+        Descriptive (not prescriptive). Surfaces the strategy mix at the
+        ticket level + per-leg structural-fit assessment. The bettor decides
+        whether to act on flagged legs.
+
+        Specifically catches the "spreading to feel safe" anti-pattern: a
+        wide spread without a structural justification (favorite mispricing
+        or thin coverage). Per ITP: handicapping is subjective, betting is
+        objective — if your opinion is no good, you won't win, regardless
+        of how wide you spread.
+        """
+        if bet_type not in _HORIZONTAL_LEGS:
+            return []
+        if not isinstance(programs, (list, tuple)) or not programs:
+            return []
+
+        # Classify each leg
+        leg_classifications = []
+        for leg_idx, leg_pgms in enumerate(programs):
+            leg_race = race + leg_idx
+            cls = self._classify_leg_strategy(leg_race, leg_pgms)
+            cls["leg_idx"] = leg_idx
+            cls["leg_race"] = leg_race
+            leg_classifications.append(cls)
+
+        # Build the strategy mix summary
+        mode_counts = {}
+        for c in leg_classifications:
+            mode_counts[c["mode"]] = mode_counts.get(c["mode"], 0) + 1
+        mix_str = ", ".join(f"{n} {m}" for m, n in sorted(mode_counts.items(), key=lambda x: -x[1]))
+
+        notes = [f"strategy mix: {mix_str}"]
+
+        # Per-leg detail with mispricing where applicable
+        for c in leg_classifications:
+            mp_str = ""
+            if c["mispricing"] is not None:
+                pct = c["mispricing"] * 100
+                if abs(pct) >= 1.5:
+                    direction = "overbet" if pct > 0 else "underbet"
+                    mp_str = f" (fav {direction} by {abs(pct):.0f}pp)"
+            fit_str = ""
+            if c["structural_fit"] == "WEAK":
+                if c["mode"] == "SPREAD-EQUITY":
+                    fit_str = (" — WEAK structural fit: SPREAD-EQUITY excluding the favorite "
+                               "without a meaningful overbet signal. Looks like spreading because "
+                               "uncertain rather than because the math says spread.")
+                elif c["mode"] == "SURVIVE":
+                    fit_str = (" — WEAK structural fit: SURVIVE pattern (using most of the field) "
+                               "without a structural justification. Per ITP: don't spread to feel "
+                               "safe; either you have a real opinion or pass the leg.")
+                elif c["mode"] == "NORMAL-WIDE":
+                    fit_str = (" — wide spread with the favorite included. Expensive coverage; "
+                               "verify multiple positive edges actually exist.")
+            elif c["structural_fit"] == "APPROPRIATE":
+                fit_str = " — APPROPRIATE for the structural setup"
+
+            if fit_str:
+                notes.append(
+                    f"leg {c['leg_idx'] + 1} (R{c['leg_race']}): {c['mode']} "
+                    f"({c['n_selected']}/{c['n_field']}){mp_str}{fit_str}"
+                )
+
+        # Summary check: any WEAK legs flagged?
+        weak_count = sum(1 for c in leg_classifications if c["structural_fit"] == "WEAK")
+        if weak_count >= 2:
+            notes.append(
+                f"⚠ {weak_count} legs with WEAK structural fit. ITP: \"treat horizontals "
+                f"like win bets — if it hits, great; if you get knocked out, so be it. "
+                f"Don't spread to survive without a structural reason.\""
+            )
+
+        return notes
+
     def _kill_shot_notes(self, race: int, bet_type: str, programs) -> list[str]:
         """PROTO-T3.9: kill-shot warning on exactas keying the favorite on top.
 
@@ -1244,6 +1404,7 @@ class SimDay:
                 ("note",    "fav-excl",   self._favorite_exclusion_notes(race, bet_type, programs)),
                 ("note",    "pool",       self._pool_notes(race, bet_type, amount)),
                 ("note",    "horiz-conv", self._horizontal_conviction_notes(race, bet_type, programs)),
+                ("note",    "hurdle",     self._hurdle_notes(race, bet_type, programs)),
                 ("note",    "kill-shot",  self._kill_shot_notes(race, bet_type, programs)),
                 ("note",    "press",      self._press_notes(race, bet_type, programs, amount)),
             ]
