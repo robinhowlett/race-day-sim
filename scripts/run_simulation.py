@@ -1114,18 +1114,31 @@ class SimDay:
         return notes
 
     def _classify_leg_strategy(self, race: int, leg_programs: list) -> dict:
-        """Classify a single leg's strategy mode based on selection structure.
+        """Classify a leg's selection structure into a strategy mode label
+        and report the favorite's market-vs-model mispricing magnitude.
+
+        Pure description. The mode label names what the bettor constructed
+        (SINGLE / NORMAL / SPREAD-EQUITY / SURVIVE / NORMAL-WIDE). The
+        mispricing field gives the underlying market signal. No fit
+        assessment — the bettor reads both and decides.
 
         Returns dict with:
-            mode: 'SINGLE' | 'NORMAL' | 'SPREAD-EQUITY' | 'SURVIVE' | 'NORMAL-WIDE'
+            mode: 'SINGLE' | 'NORMAL' | 'SPREAD-EQUITY' |
+                  'SPREAD-EQUITY-WIDE' | 'WIDE-WITH-FAV' | 'SURVIVE'
+              SINGLE                 — k=1
+              NORMAL                 — k=2-3, includes favorite (A/B with chalk)
+              SPREAD-EQUITY          — k=2-3, excludes favorite (narrow contrarian)
+              SPREAD-EQUITY-WIDE     — k>=4, excludes favorite (wide contrarian)
+              WIDE-WITH-FAV          — k>=4, includes favorite (expensive coverage)
+              SURVIVE                — k>=N-1 (using most of the field)
             n_selected: count of selections in this leg
             n_field:    field size of this leg's race
-            includes_fav: whether the favorite is in the selections
+            includes_fav: whether the favorite is among the selections
             mispricing: float or None — market P(fav) − model P(fav).
-                Positive = favorite overbet (model says they should be longer).
-                Negative = favorite underbet.
-            structural_fit: 'APPROPRIATE' | 'WEAK' | 'NEUTRAL'
-                — does the strategy mode match what mispricing justifies?
+                Positive = favorite overbet (market gives them more pool
+                weight than the model thinks they're worth).
+                Negative = favorite underbet (market gives them less than
+                the model thinks).
         """
         race_df = self.card[self.card["race_number"] == race]
         n_field = len(race_df) if not race_df.empty else 0
@@ -1133,7 +1146,7 @@ class SimDay:
         fav_pgm = self._favorite_in_race(race)
         includes_fav = fav_pgm is not None and str(fav_pgm) in [str(p) for p in leg_programs]
 
-        # Strategy mode by structure
+        # Mode by structure
         if k == 1:
             mode = "SINGLE"
         elif n_field > 0 and k >= n_field - 1:
@@ -1141,51 +1154,21 @@ class SimDay:
         elif k <= 3:
             mode = "NORMAL" if includes_fav else "SPREAD-EQUITY"
         else:  # k >= 4
-            mode = "NORMAL-WIDE" if includes_fav else "SPREAD-EQUITY"
+            mode = "WIDE-WITH-FAV" if includes_fav else "SPREAD-EQUITY-WIDE"
 
-        # Compute mispricing magnitude on the favorite for this leg.
-        # Uses combined_probs (model + odds + Benter) — combined.benter is the
-        # blended model+market estimate, so we compare market-only to a
-        # model-only proxy. For the model proxy we use cp["model"] when
-        # available; falls back to None when no curves.
+        # Favorite mispricing magnitude (market_P_fav − model_P_fav)
         mispricing = None
         try:
             cp = self.combined_probs(race)
-            if cp.get("benter") is not None and fav_pgm is not None:
+            if cp.get("model") is not None and fav_pgm is not None:
                 programs_list = cp["programs"]
                 if str(fav_pgm) in programs_list:
                     fav_idx = programs_list.index(str(fav_pgm))
                     market_p = float(cp["odds_probs"][fav_idx])
-                    model_p  = float(cp["model"][fav_idx]) if cp["model"] is not None else None
-                    if model_p is not None:
-                        mispricing = market_p - model_p
+                    model_p  = float(cp["model"][fav_idx])
+                    mispricing = market_p - model_p
         except Exception:
             mispricing = None
-
-        # Structural fit assessment
-        structural_fit = "NEUTRAL"
-        if mode in ("SPREAD-EQUITY",):
-            # Justified when favorite is meaningfully overbet
-            if mispricing is not None and mispricing > 0.05:
-                structural_fit = "APPROPRIATE"
-            elif mispricing is not None and mispricing < 0.02:
-                structural_fit = "WEAK"
-        elif mode == "SURVIVE":
-            # Justified when favorite is strongly overbet OR coverage is thin
-            try:
-                rated_frac = self.race_summary(race).get("rated_fraction", 1.0)
-            except Exception:
-                rated_frac = 1.0
-            big_overbet = mispricing is not None and mispricing > 0.10
-            thin_coverage = rated_frac < 0.4
-            if big_overbet or thin_coverage:
-                structural_fit = "APPROPRIATE"
-            else:
-                structural_fit = "WEAK"
-        elif mode == "NORMAL-WIDE":
-            # Wide spreads including the favorite are expensive; only justified
-            # when the field is genuinely wide-open (multiple positive edges)
-            structural_fit = "WEAK"  # conservative default — bettor can ignore
 
         return {
             "mode": mode,
@@ -1193,29 +1176,24 @@ class SimDay:
             "n_field": n_field,
             "includes_fav": includes_fav,
             "mispricing": mispricing,
-            "structural_fit": structural_fit,
         }
 
     def _hurdle_notes(self, race: int, bet_type: str, programs) -> list[str]:
-        """PROTO-T3.9 hurdle: classify each horizontal leg's strategy mode and
-        flag where structure doesn't match what the math would justify.
+        """PROTO-T3.9 hurdle: surface the leg-strategy structure of a
+        registered horizontal so the bettor can see what they actually
+        constructed.
 
-        Descriptive (not prescriptive). Surfaces the strategy mix at the
-        ticket level + per-leg structural-fit assessment. The bettor decides
-        whether to act on flagged legs.
-
-        Specifically catches the "spreading to feel safe" anti-pattern: a
-        wide spread without a structural justification (favorite mispricing
-        or thin coverage). Per ITP: handicapping is subjective, betting is
-        objective — if your opinion is no good, you won't win, regardless
-        of how wide you spread.
+        Pure description. For each leg, reports the structural mode
+        (SINGLE / NORMAL / SPREAD-EQUITY / SURVIVE / NORMAL-WIDE) and the
+        favorite's market-vs-model mispricing magnitude when meaningful.
+        No verdicts, no prescriptions — the bettor has the math; the
+        bettor decides.
         """
         if bet_type not in _HORIZONTAL_LEGS:
             return []
         if not isinstance(programs, (list, tuple)) or not programs:
             return []
 
-        # Classify each leg
         leg_classifications = []
         for leg_idx, leg_pgms in enumerate(programs):
             leg_race = race + leg_idx
@@ -1224,52 +1202,27 @@ class SimDay:
             cls["leg_race"] = leg_race
             leg_classifications.append(cls)
 
-        # Build the strategy mix summary
+        # Strategy mix summary at the ticket level
         mode_counts = {}
         for c in leg_classifications:
             mode_counts[c["mode"]] = mode_counts.get(c["mode"], 0) + 1
         mix_str = ", ".join(f"{n} {m}" for m, n in sorted(mode_counts.items(), key=lambda x: -x[1]))
-
         notes = [f"strategy mix: {mix_str}"]
 
-        # Per-leg detail with mispricing where applicable
+        # Per-leg detail with mispricing where it's meaningful
         for c in leg_classifications:
             mp_str = ""
-            if c["mispricing"] is not None:
+            if c["mispricing"] is not None and abs(c["mispricing"]) >= 0.015:
                 pct = c["mispricing"] * 100
-                if abs(pct) >= 1.5:
-                    direction = "overbet" if pct > 0 else "underbet"
-                    mp_str = f" (fav {direction} by {abs(pct):.0f}pp)"
-            fit_str = ""
-            if c["structural_fit"] == "WEAK":
-                if c["mode"] == "SPREAD-EQUITY":
-                    fit_str = (" — WEAK structural fit: SPREAD-EQUITY excluding the favorite "
-                               "without a meaningful overbet signal. Looks like spreading because "
-                               "uncertain rather than because the math says spread.")
-                elif c["mode"] == "SURVIVE":
-                    fit_str = (" — WEAK structural fit: SURVIVE pattern (using most of the field) "
-                               "without a structural justification. Per ITP: don't spread to feel "
-                               "safe; either you have a real opinion or pass the leg.")
-                elif c["mode"] == "NORMAL-WIDE":
-                    fit_str = (" — wide spread with the favorite included. Expensive coverage; "
-                               "verify multiple positive edges actually exist.")
-            elif c["structural_fit"] == "APPROPRIATE":
-                fit_str = " — APPROPRIATE for the structural setup"
-
-            if fit_str:
+                direction = "overbet" if pct > 0 else "underbet"
+                mp_str = f" — fav {direction} by {abs(pct):.0f}pp (market vs model)"
+            # Only emit a per-leg line when there's something to add
+            # beyond the mix summary (i.e., a meaningful mispricing number)
+            if mp_str:
                 notes.append(
                     f"leg {c['leg_idx'] + 1} (R{c['leg_race']}): {c['mode']} "
-                    f"({c['n_selected']}/{c['n_field']}){mp_str}{fit_str}"
+                    f"({c['n_selected']}/{c['n_field']}){mp_str}"
                 )
-
-        # Summary check: any WEAK legs flagged?
-        weak_count = sum(1 for c in leg_classifications if c["structural_fit"] == "WEAK")
-        if weak_count >= 2:
-            notes.append(
-                f"⚠ {weak_count} legs with WEAK structural fit. ITP: \"treat horizontals "
-                f"like win bets — if it hits, great; if you get knocked out, so be it. "
-                f"Don't spread to survive without a structural reason.\""
-            )
 
         return notes
 
