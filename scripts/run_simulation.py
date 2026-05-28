@@ -133,6 +133,26 @@ def _format_programs(programs) -> str:
 
 @dataclass
 class Bet:
+    """A single registered bet with one flat per-combo cost.
+
+    Press pattern (PROTO-T3.4): the protocol's "press the strong combos"
+    mechanic is expressed as MULTIPLE Bet objects on the same (race,
+    bet_type) where the narrow press is a subset of the wide spread.
+
+    Example — $24 trifecta with 4 strong combos at $3 + 12 spread combos
+    at $1 (per simulation-protocol.md Step E.4 worked example):
+        # The wide spread (16 combos at $1 each = $16)
+        sim.register_bet(R, 'TRIFECTA',
+            [['7'], ['1','2','3','4'], ['1','2','3','4']],
+            16.0, 'spread coverage')
+        # The narrow press on the strong combos (4 combos at $2 extra each = $8)
+        sim.register_bet(R, 'TRIFECTA',
+            [['7'], ['1','2'], ['1','2']],
+            8.0, 'press strongest 4 combos')
+        # Total: $24, with $3 effective on the 4 strong combos (1 + 2)
+        # and $1 on the other 12. Press detection in register_bet surfaces
+        # this as a [press note] when it fires.
+    """
     race: int
     bet_type: str  # WIN, EXACTA, TRIFECTA, PICK3, etc.
     programs: list  # program numbers involved
@@ -857,6 +877,92 @@ class SimDay:
             )]
         return []
 
+    @staticmethod
+    def _normalize_programs_for_press(programs) -> list[set] | None:
+        """Convert programs into a list of frozensets (one per position/leg)
+        for press subset comparison. Returns None for shapes that don't make
+        sense for press detection (single-program WIN, flat lists).
+        """
+        if not isinstance(programs, (list, tuple)) or not programs:
+            return None
+        # WIN-style single program: ['7']
+        if not isinstance(programs[0], (list, tuple)):
+            # Could be flat single-combo list ['7','3','2'] for tri — treat
+            # each position as a 1-element set
+            return [{str(p)} for p in programs]
+        return [{str(p) for p in pos} for pos in programs]
+
+    def _press_notes(self, race: int, bet_type: str, programs, amount: float) -> list[str]:
+        """PROTO-T3.4: detect press patterns across multiple Bets on the same
+        (race, bet_type).
+
+        A press ticket is conceptually one bet but registered as N separate
+        Bet objects with overlapping `programs` and different `amount`. This
+        check fires when the new bet's programs is a SUBSET (per-position) of
+        a prior bet's programs — meaning the new bet is "pressing" a subset
+        of the prior bet's combos at a different unit cost.
+
+        Surfaces total stake across the press group, total combo count, and
+        per-combo cost so the bettor sees the unified economic picture.
+        """
+        new_sets = self._normalize_programs_for_press(programs)
+        if new_sets is None:
+            return []
+        prior_matches = []
+        for prev in self.bets:
+            if prev.race != race or prev.bet_type != bet_type:
+                continue
+            prev_sets = self._normalize_programs_for_press(prev.programs)
+            if prev_sets is None or len(prev_sets) != len(new_sets):
+                continue
+            # Subset check (either direction): new ⊆ prev OR prev ⊆ new
+            new_in_prev = all(ns <= ps for ns, ps in zip(new_sets, prev_sets))
+            prev_in_new = all(ps <= ns for ns, ps in zip(prev_sets, new_sets))
+            if new_in_prev or prev_in_new:
+                prior_matches.append(prev)
+        if not prior_matches:
+            return []
+
+        # Build the press summary: total stake, total combo count, effective
+        # per-combo costs at each level
+        n_combos_new = 1
+        for ns in new_sets:
+            n_combos_new *= max(len(ns), 1)
+        per_combo_new = amount / n_combos_new if n_combos_new > 0 else 0
+
+        notes = []
+        for prev in prior_matches:
+            prev_sets = self._normalize_programs_for_press(prev.programs)
+            n_combos_prev = 1
+            for ps in prev_sets:
+                n_combos_prev *= max(len(ps), 1)
+            per_combo_prev = prev.amount / n_combos_prev if n_combos_prev > 0 else 0
+            total_stake = prev.amount + amount
+            # Identify which is the "narrow press" and which is the "wide spread"
+            new_in_prev = all(ns <= ps for ns, ps in zip(new_sets, prev_sets))
+            if new_in_prev:
+                narrow_pgms = _format_programs(programs)
+                narrow_cost = per_combo_new
+                narrow_n = n_combos_new
+                wide_pgms = _format_programs(prev.programs)
+                wide_cost = per_combo_prev
+                wide_n = n_combos_prev
+            else:
+                narrow_pgms = _format_programs(prev.programs)
+                narrow_cost = per_combo_prev
+                narrow_n = n_combos_prev
+                wide_pgms = _format_programs(programs)
+                wide_cost = per_combo_new
+                wide_n = n_combos_new
+            notes.append(
+                f"press detected with prior R{race} {bet_type} bet: "
+                f"narrow {narrow_pgms} ({narrow_n} combos at ${narrow_cost:.2f}/combo) "
+                f"+ wide {wide_pgms} ({wide_n} combos at ${wide_cost:.2f}/combo); "
+                f"total stake ${total_stake:.2f}. Effective cost on the narrow combos: "
+                f"${narrow_cost + wide_cost:.2f}/combo."
+            )
+        return notes
+
     def _kill_shot_notes(self, race: int, bet_type: str, programs) -> list[str]:
         """PROTO-T3.9: kill-shot warning on exactas keying the favorite on top.
 
@@ -989,6 +1095,7 @@ class SimDay:
                 ("note",    "pool",       self._pool_notes(race, bet_type, amount)),
                 ("note",    "horiz-conv", self._horizontal_conviction_notes(race, bet_type, programs)),
                 ("note",    "kill-shot",  self._kill_shot_notes(race, bet_type, programs)),
+                ("note",    "press",      self._press_notes(race, bet_type, programs, amount)),
             ]
             for kind, tag, msgs in checks:
                 for m in msgs:

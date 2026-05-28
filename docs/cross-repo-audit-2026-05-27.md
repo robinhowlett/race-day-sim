@@ -591,17 +591,21 @@ For the spec's 3/1 horse in 3×2×2: spec = 1.33, code = 1.33. For the spec's 6/
 
 ### PROTO-T3.4 — Press mechanic is doc-only, no code support
 
-Searched all of `src/sim/` and `scripts/` — zero hits for `press`, `basket`, `multiplier`, `tier`. The protocol's "press at 2x/3x/4x with layered baskets (Win + Exacta key + Trifecta pressed + cover)" has no datatype, no helper, no enforcement.
+**Status (2026-05-28):** FIXED via decomposition pattern + detection note (light approach).
 
-**Verification approach:** Grep confirms absence. No DB needed.
+**Decision rationale:** Pressing is "same total stake, weighted toward high-conviction combos." Mathematically a press ticket equals N flat tickets with overlapping `programs` and different `amount` — no new datatype needed for evaluation. The unity is conceptual (bettor's view of "one strategic plan"), not structural. Adding a `Basket` class would touch the Bet dataclass, register_bet validation, evaluation breakdown, and display formatting for a rarely-used construct. YAGNI applies until press is empirically common in real sim runs.
 
-**Fix decision required first:** Should the press be CODE or JUDGMENT?
-- If code: extend `Bet` dataclass to support per-combo multipliers (instead of flat `amount`). `Bet.combinations: list[tuple[programs, multiplier]]`. The total amount becomes `sum(base_unit × multiplier × combos_in_group)`. Add a `Basket` class that bundles related Bets (Win + Exacta + Trifecta on the same conviction).
-- If judgment: delete the press section from simulation-protocol.md or move it to a "guidance" appendix. Stop claiming the scaffold "applies protocol rules deterministically" for sizing.
+**Fix applied:**
+- `Bet` docstring updated with the press decomposition pattern as a worked example (the protocol's $24 trifecta with 4 strong combos at $3 + 12 spread combos at $1 → register as wide ticket + narrow press, with totals reconstructed at evaluation).
+- New `_press_notes()` helper detects press patterns at registration: when a new bet's programs is a subset (per-position) of a prior bet on the same (race, bet_type), surfaces a `[press note]` showing both tickets' combo counts, per-combo costs, total stake, and the effective per-combo cost on the narrow combos (sum of both layers).
 
-Recommendation: code it. The press is a mechanical decision (combo identified as high-conviction → multiply by N) that benefits from automation. A `press_combos(combos, conviction_scores, base_unit, total_budget)` function could redistribute the budget proportionally to conviction.
+**Verified directly:**
+- Wide spread `TRIFECTA 7/1,2,3,4/1,2,3,4 ($16)` followed by narrow press `TRIFECTA 7/1,2/1,2 ($8)` → press note fires reporting "narrow 4 combos at $2/combo + wide 16 combos at $1/combo; total stake $24. Effective cost on the narrow combos: $3/combo."
+- False-positive checks pass: different bet_type, different race, or non-subset programs all produce no note.
 
-**Severity:** HIGH
+**Deferred:** `Basket` class wrapping multiple Bets with shared rationale and unified analytics. Captured as a future enhancement when press becomes more common in real sim runs OR when we want analytics over "did my press strategy beat my flat strategy" type questions.
+
+**Severity:** HIGH → FIXED (informational detection; press structure preserved via decomposition).
 
 ### PROTO-T3.5 — "Never exclude favorite from 2nd/3rd unless total collapse" — unenforced
 
