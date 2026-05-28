@@ -172,10 +172,11 @@ class SimDay:
         n_rated = len(rated)
         n_total = len(ratings)
 
-        # Pace
+        # Pace (surface-aware so gap thresholds use the right fraction)
+        surface = str(r["surface"]) if "surface" in race.columns else None
         v0s = race["adj_v0"].dropna().tolist()
         decays = race["adj_decay"].dropna().tolist()
-        pace = predict_pace(v0s, decays, furlongs) if len(v0s) >= 3 else None
+        pace = predict_pace(v0s, decays, furlongs, surface=surface) if len(v0s) >= 3 else None
 
         # Edge analysis
         top_edge = rated["edge"].max() if n_rated > 0 else None

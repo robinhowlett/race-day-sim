@@ -229,11 +229,12 @@ def main():
         race_df = card[card["race_number"] == race_num].copy().reset_index(drop=True)
         furlongs = float(race_df["furlongs"].iloc[0])
 
-        # Pace prediction
+        # Pace prediction (surface-aware)
+        surface = str(race_df["surface"].iloc[0]) if "surface" in race_df.columns else None
         v0s = race_df["adj_v0"].dropna().tolist()
         decays = race_df.loc[race_df["adj_v0"].notna(), "decay_rate"].tolist()
         if len(v0s) >= 3:
-            pace_result = predict_pace(v0s, decays, furlongs)
+            pace_result = predict_pace(v0s, decays, furlongs, surface=surface)
         else:
             pace_result = {"scenario": "INSUFFICIENT_DATA", "speed_count": 0,
                           "leader_decay": 0, "median_decay": 0, "gap_1_2": 0,

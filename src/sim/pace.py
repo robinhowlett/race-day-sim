@@ -1,8 +1,12 @@
 """Prospective pace prediction from field velocity curve distribution.
 
-Empirical context (dirt, 2012-2015, 100K+ races):
-- Sprint adj_v0: mean 64.4, std 2.1. Median within-race gap (1st-2nd): 0.88
-- Route adj_v0: mean 60.8, std 1.9. Median within-race gap (1st-2nd): 0.77
+Empirical context (handycapper TB 2014, ~34K races):
+- Sprint adj_v0 by surface: dirt=64.6, synthetic=63.6, turf=61.9, all ≈64
+- Route adj_v0 by surface: dirt=60.4, synthetic=58.2, turf=56.0, all ≈60
+- Within-race gap (1st-2nd) as a fraction of field median v0:
+    dirt route=0.0125, dirt sprint=0.0134
+    synthetic route=0.0155, synthetic sprint=0.0139
+    turf route=0.0137, turf sprint=0.0264 (small n=158, treat with caution)
 - The horse with highest adj_v0 wins only 12-16% and misses the board ~62% of the time.
 - adj_v0 characterizes who will be ON THE LEAD (energy expenditure), not who wins.
 - Decay rate determines who sustains — the real predictor of outcome, especially in routes.
@@ -11,41 +15,59 @@ Empirical context (dirt, 2012-2015, 100K+ races):
 import numpy as np
 
 
-# Dirt baseline median v0 used to derive scale-relative gap thresholds.
-# Empirical from 2012-2015: sprint mean 64.4, route mean 60.8 (≈ 62.5 average).
-# Fields with median v0 well below this are typically turf — gap thresholds
-# need to scale down proportionally so a 0.55 ft/s gap on a 55-v0 turf field
-# is treated as "tight" (the same fraction of v0) rather than as "open."
-_DIRT_BASELINE_V0 = 62.5
+# Surface×zone-specific gap thresholds as fractions of the field's median v0.
+# Sources: handycapper TB 2014, ~34K races, P50 and P85 of (gap_1_2 / median_v0).
+# P50 is the "contested" threshold (gaps below median = contested).
+# P85 is the "lone-speed" threshold (gaps well above typical = standout speed).
+#
+# Why surface×zone-specific (vs single auto-scaling fraction):
+# - Dirt route, dirt sprint, turf route cluster tightly around 0.013
+# - Synthetic route is elevated (0.0155) — synthetic surfaces bunch finishes
+# - Turf sprint is markedly higher (0.0264) but small-sample (n=158); the
+#   turf-sprint distance market is structurally chaotic (5-5.5f turf is a
+#   weird selection of pure speed types)
+# Per-surface lookup is more honest than a single global fraction.
+_GAP_FRAC = {
+    # (surface, zone): (contested_p50, lone_speed_p85)
+    ("Dirt",      "route"):  (0.0125, 0.0320),
+    ("Dirt",      "sprint"): (0.0134, 0.0334),
+    ("Synthetic", "route"):  (0.0155, 0.0387),
+    ("Synthetic", "sprint"): (0.0139, 0.0340),
+    ("Turf",      "route"):  (0.0137, 0.0354),
+    ("Turf",      "sprint"): (0.0264, 0.0722),
+}
+# Fallback fractions for unknown surface combos (use Dirt as the safe default
+# since it's the largest sample and the conservative middle of the cluster)
+_DEFAULT_GAP_FRAC = {
+    "route":  (0.0125, 0.0320),
+    "sprint": (0.0134, 0.0334),
+}
 
-# Gap thresholds expressed as a fraction of field median v0. Derived from
-# the dirt baseline: 0.77/62.5 ≈ 0.012 (route), 0.88/62.5 ≈ 0.014 (sprint).
-# These auto-scale across surfaces because actual field median v0 varies:
-#   dirt sprint  ≈ 64.4 → threshold ≈ 0.90 ft/s (matches old 0.88)
-#   turf sprint  ≈ 55.5 → threshold ≈ 0.78 ft/s (vs old 0.88, less spurious "open" calls)
-#   dirt route   ≈ 60.8 → threshold ≈ 0.73 ft/s (matches old 0.77)
-#   turf route   ≈ 53.9 → threshold ≈ 0.65 ft/s
-_CONTESTED_FRAC_ROUTE  = 0.0123  # 0.77 / 62.5
-_CONTESTED_FRAC_SPRINT = 0.0141  # 0.88 / 62.5
-_LONE_SPEED_FRAC_ROUTE  = 0.024   # 1.5 / 62.5
-_LONE_SPEED_FRAC_SPRINT = 0.027   # 1.7 / 62.5
+# Speed-count inclusion threshold (a horse counts as "speed" if their v0 is
+# within this fraction of the leader's v0). Single global fraction — the
+# speed-count concept is less surface-sensitive than gap thresholds.
+_SPEED_THRESHOLD_FRAC_ROUTE  = 0.016   # ≈ 1.0 ft/s at v0=62.5
+_SPEED_THRESHOLD_FRAC_SPRINT = 0.024   # ≈ 1.5 ft/s at v0=62.5
 
 
 def predict_pace(adj_v0s: list[float], decay_rates: list[float],
-                 furlongs: float = 8.0) -> dict:
+                 furlongs: float = 8.0, surface: str | None = None) -> dict:
     """Predict pace scenario from the field's velocity curve profiles.
 
     Args:
         adj_v0s: adjusted initial velocities for each horse
         decay_rates: deceleration rates for each horse
         furlongs: race distance (affects sprint/route classification)
+        surface: "Dirt" / "Turf" / "Synthetic". When supplied, uses
+            surface×zone-specific gap-threshold fractions calibrated from
+            handycapper TB 2014 data. When None, falls back to dirt
+            (the largest, most stable sample).
 
     Gap thresholds for CONTESTED / LONE_SPEED are expressed as a fraction of
-    the field's median v0, scaled from the dirt baseline (≈62.5 ft/s). This
-    means turf races (median v0 ~54) get proportionally tighter thresholds —
-    a 0.6 ft/s gap on a turf field is "tight" because it's the same fraction
-    of v0 as a 0.7 ft/s gap on dirt. Otherwise turf races get over-classified
-    as CONTESTED because the absolute scale differs.
+    the field's median v0. This auto-scales across surfaces because absolute
+    v0 magnitudes differ (dirt ~64, turf ~56) — the same race "tightness"
+    means different absolute gap. Surface-specific fractions further refine
+    where the empirical distribution diverges (synthetic and turf sprint).
 
     Returns dict with:
         scenario: CONTESTED / CONTESTED_HIGH_DECAY / LONE_SPEED / MODERATE / etc.
@@ -70,20 +92,22 @@ def predict_pace(adj_v0s: list[float], decay_rates: list[float],
     median_v0    = float(np.median(adj_v0s))
 
     is_route = furlongs > 6.5
+    zone = "route" if is_route else "sprint"
 
-    # Speed-count threshold also scales with field magnitude.
-    # Dirt baseline: 1.0 ft/s (route) / 1.5 ft/s (sprint) at v0 ≈ 62.5
-    speed_frac = (1.0 / _DIRT_BASELINE_V0) if is_route else (1.5 / _DIRT_BASELINE_V0)
+    # Speed-count threshold (single global fraction; less surface-sensitive
+    # than gap thresholds). Dirt baseline: 1.0 ft/s route, 1.5 ft/s sprint at
+    # v0 ≈ 62.5 → fractions ≈ 0.016 / 0.024.
+    speed_frac = _SPEED_THRESHOLD_FRAC_ROUTE if is_route else _SPEED_THRESHOLD_FRAC_SPRINT
     speed_threshold = max(0.3, speed_frac * median_v0)
     speed_count = sum(1 for v in v0_sorted if v >= v0_sorted[0] - speed_threshold)
 
-    # Gap thresholds: scaled by field median v0 vs dirt baseline.
-    if is_route:
-        contested_threshold = _CONTESTED_FRAC_ROUTE  * median_v0
-        lone_speed_threshold = _LONE_SPEED_FRAC_ROUTE * median_v0
-    else:
-        contested_threshold = _CONTESTED_FRAC_SPRINT  * median_v0
-        lone_speed_threshold = _LONE_SPEED_FRAC_SPRINT * median_v0
+    # Gap thresholds: surface×zone-specific fractions of field median v0.
+    contested_frac, lone_speed_frac = _GAP_FRAC.get(
+        (surface, zone),
+        _DEFAULT_GAP_FRAC[zone],
+    )
+    contested_threshold  = contested_frac  * median_v0
+    lone_speed_threshold = lone_speed_frac * median_v0
 
     # Note: the original code had a duplicate `elif gap_1_2 < contested_threshold`
     # branch (dead code, RDS pace M2). Removed.

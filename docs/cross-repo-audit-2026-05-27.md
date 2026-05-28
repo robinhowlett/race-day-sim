@@ -437,7 +437,18 @@ Cross-zone fallback is structurally sound but relies on RKM-T1.2 being fixed fir
 
 - **`evaluate.py` exotic payoff math** (RDS H1): ✅ FIXED 2026-05-28 (deprecated). Module marked deprecated with `DeprecationWarning` on import; bugs documented in module docstring. Canonical evaluator is `SimDay._evaluate_bet` in `run_simulation.py` (deterministic, all bet types, official_position-aware, DB-authoritative payoffs from wps + exotics tables). Module retained for `simulate_race_day.py` import compatibility until PROTO-T3.7 (scaffold consolidation) decides cleanup.
 - **`kelly_exotic` formula** (RDS H5): mathematically incorrect — `edge / avg_payoff` is off by `b/(b+1)`. Under-stakes (safe direction) but doesn't match docstring.
-- **Pace thresholds are unit-naive across surfaces** (RDS M1): ✅ FIXED 2026-05-28. `predict_pace` now scales gap thresholds by `field median v0 / dirt baseline (62.5)`. Turf field with median v0=54 gets proportionally tighter thresholds (turf 0.6 ft/s gap = same fraction of v0 as dirt 0.7 ft/s). Auto-scaling avoids the surface-specific calibration headache while preserving dirt behavior.
+- **Pace thresholds are unit-naive across surfaces** (RDS M1): ✅ FIXED 2026-05-28 (re-refined with empirical surface×zone fractions). `predict_pace` takes a `surface` parameter and looks up surface×zone-specific gap-threshold fractions (P50 = contested, P85 = lone-speed) calibrated from handycapper TB 2014 data (~34K races):
+
+  | Surface×Zone | Contested frac | Lone-speed frac | n_races |
+  |---|---|---|---|
+  | Dirt route | 0.0125 | 0.0320 | 10,342 |
+  | Dirt sprint | 0.0134 | 0.0334 | 18,095 |
+  | Synthetic route | 0.0155 | 0.0387 | 1,128 |
+  | Synthetic sprint | 0.0139 | 0.0340 | 1,151 |
+  | Turf route | 0.0137 | 0.0354 | 3,613 |
+  | Turf sprint | 0.0264 | 0.0722 | 158 (small-sample caution) |
+
+  Most surface×zone combos cluster tightly (~0.013), confirming the auto-scaling intuition. Synthetic route is meaningfully looser (0.0155); turf sprint is markedly looser still (0.0264) but with a small-n caveat. Both `run_simulation.py` and `simulate_race_day.py` updated to pass `surface=` to `predict_pace`. Default fallback uses dirt (largest, most stable sample).
 - **Pace second-clause is unreachable** (RDS M2): ✅ FIXED 2026-05-28 (dead-code branch removed in same edit).
 - **MIN_EDGE_CONVICTION = 0** (RDS L1): ✅ FIXED 2026-05-28 (clarified, kept at 0; empirically validated). Renamed to `MIN_EDGE_CONVICTION_MARGIN` with explanatory comment. The constant is NOT a no-op — `worst_case > 0` is "band clear of zero," a defensible floor.
 
