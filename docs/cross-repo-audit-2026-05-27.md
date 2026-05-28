@@ -62,124 +62,264 @@ These directly cause inflated edges, future-data leakage, or incorrect probabili
 
 **Severity:** HIGH. Reused horse names contaminate the data.
 
-### RKM-T1.3 — `compute_form.py` loop hardcodes "skip first 2 races"
+### RKM-T1.3 — `compute_form.py` loop bound out of sync with `MIN_PRIOR_RACES`
 
 **File:** `rkm/scripts/compute_form.py:136`
 
-**Problem:** `for i in range(2, len(race_obs))` — loop starts at index 2, meaning races 1 and 2 chronologically never produce a snapshot. Our recent `MIN_PRIOR_RACES = 1` change in `form.py` is dead code because this script-level loop bound shadows it.
+**Status (2026-05-27):** RESOLVED in code (recompute pending).
 
-**Verification approach:** Check the count of starters with `n_recent_races = 1` in `rkm_current_form`. Should be substantial after the change; will be ~zero if the loop bound is still 2.
+**Original framing:** Loop starts at index 2, "skipping first 2 races." User pushback was correct — the original `range(2, ...)` was BY DESIGN under the original `MIN_PRIOR_RACES = 2`: needing 2 prior races to make a snapshot meant starting at i=2 so `prior = race_obs[:2]` gives 2 races. The original code was self-consistent.
 
-**Fix:** Change to `for i in range(MIN_PRIOR_RACES, len(race_obs))` and re-run `compute_form.py`. Will need full recompute on robinpc.
+**Actual issue:** Our recent change of `MIN_PRIOR_RACES` from 2 → 1 in `form.py` was incompletely propagated. The script loop bound still hardcoded `range(2, ...)`, so 2nd-start horses (1 prior race) never got a snapshot — the broader coverage we intended did not exist in practice.
 
-**Severity:** HIGH. 2nd-start horses (a key market situation, especially for FTS-following debuts) are silently excluded from current_form.
+**Decision (2026-05-27):** Option B — honor `MIN_PRIOR_RACES = 1`. 2nd-start horses get a snapshot from their single prior race. Adds coverage; those snapshots will be noisy (single-race basis) but downstream consumers can weight by `n_recent_races`.
+
+**Fix applied:** Loop changed to `range(1, len(race_obs))` at `compute_form.py:138` with comment explaining the dependence on `MIN_PRIOR_RACES`.
+
+**Pending:** Full recompute of `rkm_current_form` on robinpc to materialize 2nd-start snapshots.
+
+**Severity:** HIGH. Until recompute, 2nd-start horses (a key market situation, especially for FTS-following debuts) remain silently excluded from `current_form`.
 
 ### RKM-T1.4 — Career baseline leaks future data into v0_trend
 
-**Files:** `rkm/scripts/compute_form.py:54-62, 140`
+**Files:** `rkm/scripts/compute_form.py:53-62, 105-106, 140`
 
-**Problem:** `career_v0` passed into `compute_form_at_date` comes from a curve fit over the horse's entire career — including races AFTER the form snapshot date. `v0_trend = current_v0 - career_v0` is comparing prior-only against future-aware. The `rkm_current_form` table is marked "pre-race safe" in CLAUDE.md but isn't strictly so for v0_trend.
+**Status (2026-05-27):** CONFIRMED by code review.
 
-**Verification approach:** For a known horse with substantial form changes mid-career, manually compute the as-of-date career baseline (from races up to that date only) and compare to the stored `career_v0` in `rkm_current_form`. If they differ for early-career snapshots, leakage confirmed.
+**Problem:** `career_v0` is loaded once from `rkm_velocity_curves` (compute_form.py:53-57), which `compute_curves.py` fits over each horse's *entire* career with no date bound. That single full-career value is passed unchanged into every `compute_form_at_date` invocation regardless of snapshot date (lines 105-106, 140). `v0_trend = current_v0 - career_v0` therefore compares prior-only `current_v0` against a future-aware `career_v0`. The `rkm_current_form` table is marked "pre-race safe" in CLAUDE.md but isn't strictly so for `v0_trend` or `career_v0`.
 
-**Fix:** Compute career baseline as a trailing aggregate (only races before the snapshot date), not the full-career curve.
+There is no path in the code by which the stored `career_v0` could be as-of-date — it is a static lookup.
 
-**Severity:** HIGH. Breaks the pre-race firewall for v0_trend.
+**Fix:** Compute career baseline as a trailing aggregate (only races before the snapshot date), not the full-career curve. This means `career_v0` becomes a per-snapshot computation, not a join from `rkm_velocity_curves`.
+
+**Severity:** HIGH. Breaks the pre-race firewall for `v0_trend` and `career_v0`. Any consumer using `v0_trend` to flag improvers/decliners is using future information.
 
 ### WA-T1.1 — Stern k = 0.81 was never empirically calibrated
 
 **Files:** `wagering-analytics/scripts/populate_stern_fair.py:29`, `wagering-analytics/docs/exotic-payoff-analysis.md:201-227`
 
-**Problem:** The spec promised a grid-search calibration of k segmented by field size/surface/race_type. No such code exists. The constant 0.81 is imported from Stern (1992), a different dataset and era. README.md claims "empirically confirmed" but there's no calibration record.
+**Status (2026-05-27):** PARTIALLY CONFIRMED — no calibration code existed; calibrated MLE differs modestly from 0.81.
 
-**Verification approach:** Run an actual grid search of k from 0.5 to 1.2 against this dataset. Check whether 0.81 actually minimizes the residual between Stern-projected probability and observed finish frequency.
+**Problem:** Spec promised a grid-search calibration segmented by field size / surface / race_type. No such code existed in the repo. The constant 0.81 was imported from Stern (1992) — a different dataset and era. CLAUDE.md called it "empirically confirmed" without a calibration record.
 
-**Fix:** Build the calibration script. If 0.81 is approximately right, document the validation. If not, replace with the calibrated value (potentially segmented).
+**Verification (2026-05-27):** Built `wagering-analytics/scripts/calibrate_stern_k.py`. Ran grid search of k ∈ [0.50, 1.20] step 0.02 against top-3 ordering log-likelihood. Used 80,042 clean races (excluded coupled entries, DH/DQ in top 3, incomplete top-3, and field size <5).
 
-**Severity:** HIGH. Every `stern_fair` value is biased by this unverified prior. The "15-21% trifecta overlay" headline is partly a function of k.
+**Findings:**
+- **Global MLE k = 0.86** (corrected 2026-05-27 to use `official_position` instead of `finish_position`; original `finish_position` run gave 0.88).
+- LL surface very flat near peak: k=0.81 is ~150 nats worse than peak across 80K races (~0.002 nats/race) — practically negligible per-race, but a clear ~0.05 offset in MLE.
+- Segmentation by field size **does NOT earn its keep**: small (5-7) → 0.86, mid (8-10) → 0.86, large (11+) → 0.88. CLAUDE.md's "minimal variation by field size; single parameter sufficient" is empirically supported.
+- The chosen single parameter (0.81) is off by ~0.05 from the MLE.
+
+**Fix:** Updated `populate_stern_fair.py:29` to `STERN_K = 0.86`. Run `populate_stern_fair.py --recompute-all` to refresh `exotic_harville_ratios.stern_fair`. Document calibration provenance and keep `calibrate_stern_k.py` checked in for reproducibility. Skip surface/distance segmentation (gain is minimal vs added complexity); revisit only if odds-implied prob calibration changes.
+
+**Note on official_position vs finish_position:** Exotic payoffs are settled against `official_position` (post-DQ, post-objection), not `finish_position` (where the horse crossed the line). 213K starters differ between the two columns; 50K were DQ'd; ~37K races had a top-3 DQ. Calibration scripts must use `official_position`.
+
+**Caveat:** Calibration uses tote-implied win probabilities (per `race_probabilities.win_prob`), so the calibrated k inherits any favorite-longshot bias in the closing odds. Document this.
+
+**Severity reclassified:** MEDIUM. Every `stern_fair` value is biased, but the bias is small (0.81 vs 0.87 on a flat LL surface). The "15-21% trifecta overlay" headline shifts modestly but doesn't invert.
 
 ### WA-T1.2 — Payoff model R² is largely tautological
 
 **Files:** `wagering-analytics/scripts/fit_payoff_models.py:80-95, 152, 210-226, 306-308`
 
-**Problem:**
-- Random train/test split (not year-stratified as spec requires) — same race-day rows leak between train and test
-- The model regresses `log(payoff) ~ log_winner_odds + log_second_odds + ...` which is essentially the inverse of the joint probability identity. High R² mostly reflects this near-tautology, not learned skill.
-- No naive baseline (`log_payoff = -log(p1×p2×p3) + const`) reported
+**Status (2026-05-27):** PARTIALLY DISPROVEN — model adds real skill above naive baseline; tautology framing was too harsh.
 
-**Verification approach:** Re-fit with year-stratified holdout (2014-2017 as test, prior as train). Compare R² to a naive baseline. The drop from "R²=0.88" to true forward R² will quantify the inflation.
+**Problem (original framing):** Random train/test split (not year-stratified). Model fits `log(payoff) ~ log_odds_1 + log_odds_2 + log_odds_3` which is "inverse of joint probability identity" — high R² mostly reflects identity, not learned skill. No naive baseline reported.
 
-**Fix:** Year-stratified split. Report skill above naive baseline, not raw R².
+**Verification (2026-05-27):** Built `wagering-analytics/scripts/verify_payoff_skill.py`. Year-stratified split (train < 2016, test 2016-2017). Tested against naive Stern baseline (k=0.87, after refresh). Excluded SUPERFECTA (race_probabilities.wagering_position only goes 1-3 in dataset).
 
-**Severity:** HIGH. Headline metric is misleading.
+**Findings:**
+
+| Model | EXACTA R²_test (n=97K) | TRIFECTA R²_test (n=96K) |
+|---|---|---|
+| Naive Harville (1 predictor) | 0.867 | 0.808 |
+| Naive Stern k=0.87 (1 predictor) | 0.874 | 0.819 |
+| Pre-race full (no fav_*) | 0.915 | 0.893 |
+| Original full (with post-race fav_*) | 0.916 | 0.894 |
+
+**Deltas:**
+- Stern over Harville: +0.007 / +0.011 (small but real)
+- **Pre-race full over Stern: +0.041 / +0.074 — this is the actual learned skill.** Pool size, field size, HHI, surface effects do add genuine predictive value above naive Stern fair value.
+- Post-race fav_* features: +0.001 / +0.001 — see WA-T1.3 below.
+
+**Conclusion:** The model adds 4-7 R² points of real skill above the naive Stern baseline. The original "R²=0.88" headline is somewhat misleading (most variance comes from the joint-odds identity), but the model is not mostly tautological — it captures real pool-size, field-size, and surface effects. Year-stratified test R² ≈ train R², so generalizes.
+
+**Fix:** (1) Update `fit_payoff_models.py` to year-stratified split. (2) Report skill-above-naive (ΔR²) alongside raw R² in the coefficient JSON. (3) Use refreshed `stern_fair` (k=0.87) as input.
+
+**Severity reclassified:** MEDIUM. Headline misleading but model has real skill. Audit's "mostly tautology" framing was wrong.
 
 ### WA-T1.3 — Payoff model uses post-race features
 
-**File:** `wagering-analytics/scripts/fit_payoff_models.py:111`
+**File:** `wagering-analytics/scripts/fit_payoff_models.py:111, 154-159`
 
-**Problem:** Features like `bad_fav_legs`, `fav_won`, `fav_second`, `fav_third`, `fav_fourth`, and the `log_odds1_x_fav_*` interactions are POST-race outcomes. The model is sold as pre-race projection but is fit on outcomes that aren't knowable until the race runs.
+**Status (2026-05-27):** DISPROVEN for verticals (EXACTA/TRIFECTA); horizontals (Pick 3/4/5/6) NOT YET VERIFIED.
 
-For Pick 3/4, `bad_fav_legs` has the largest non-odds coefficient (PICK_3 = 0.088, PICK_4 = 0.122).
+**Problem (original framing):** `bad_fav_legs`, `fav_won`, `fav_second`, `fav_third`, `fav_fourth`, `log_odds1_x_fav_*` interactions are post-race outcomes. Model is sold as pre-race projection but fit on race outcomes. Audit cited Pick 3/4 `bad_fav_legs` coefficient at 0.088 / 0.122 as evidence of feature dominance.
 
-**Verification approach:** Re-fit the model with only pre-race features (drop all `fav_*_position`, `bad_fav_legs`, etc.). Compare R². Whatever drops is the post-race contribution.
+**Verification (2026-05-27 — verticals only):** `verify_payoff_skill.py` compared pre-race full model (no `fav_*` features) vs original full model on year-stratified holdout.
 
-**Fix:** Either (a) drop the post-race features and accept lower R², or (b) replace with pre-race surrogates (e.g., model-predicted `P(bad_fav)`).
+**Findings (verticals):**
 
-**Severity:** HIGH. Model is unusable for stated purpose without this fix.
+| Bet type | Pre-race R²_test | + fav_* features R²_test | ΔR² |
+|---|---|---|---|
+| EXACTA | 0.915 | 0.916 | **+0.001** |
+| TRIFECTA | 0.893 | 0.894 | **+0.001** |
+
+**Conclusion (verticals):** The post-race `fav_*` features contribute essentially zero out-of-sample R² for EXACTA and TRIFECTA. They are present in the spec and statistically non-zero in coefficient terms, but predictively inert. The audit's concern that these features were doing real work was **wrong for verticals**.
+
+**Recommendation:** Drop the `fav_*` features from vertical models for cleanliness (they're dead weight, and they're post-race so violate the contract on principle), but accept that doing so won't materially change predictions.
+
+**Horizontal verification (2026-05-27):** `verify_payoff_skill_horizontal.py` ran on Pick 3 (608K) and Pick 4 (137K), excluding carryover. Year-stratified split.
+
+| Bet | Pre-race R²_test | + bad_fav_legs R²_test | ΔR² |
+|---|---|---|---|
+| PICK_3 | 0.7498 | 0.7502 | **+0.0003** |
+| PICK_4 | 0.6858 | 0.6862 | **+0.0004** |
+
+`bad_fav_legs` coefficient was +0.078 (Pick 3) / +0.111 (Pick 4) — non-zero but predictively inert. The audit confused coefficient magnitude with predictive contribution; in correlated feature sets, a non-zero coefficient just shifts mass without adding skill.
+
+**Bonus finding (not in original audit):** Pick 3 OLS model is near-useless above a one-line parlay formula. Naive parlay R²=0.747 vs full pre-race R²=0.750. Pick 4 marginally better at +0.027 above naive. Could replace the Pick 3/4 OLS models with `expected_payoff = (1 - takeout) × Π(odds_i + 1)` and lose almost nothing.
+
+**Pick 5 / Pick 6 verified 2026-05-27 (carryover-aware):**
+
+Distinction:
+- **Standard pari-mutuel carryover** is +EV — yesterday's stranded pool gets added to today's, effectively a takeout reduction. Pros wait for carryover days.
+- **Jackpot pool_type** is a separate product (Rainbow 6, Single 6 Jackpot) with single-unique-winner rules; only +EV on mandatory-payout days. Excluded from this verification.
+
+`verify_payoff_skill_pick56.py` ran on Pick 5 (20K rows, 10% carryover) and Pick 6 standard (44K rows, 54% carryover). Year-stratified split (train < 2016, test 2016-2017).
+
+| Model | Pick 5 R²_test | Pick 6 R²_test |
+|---|---|---|
+| Naive parlay only | 0.261 | **−0.001** (worse than mean) |
+| + log_carryover | 0.575 | 0.326 |
+| Pre-race full (legs+pool+carry+hhi+field) | 0.626 | 0.469 |
+| + bad_fav_legs (post-race) | 0.627 | 0.468 |
+
+**Findings:**
+
+1. **Naive parlay is useless for Pick 5/6.** R² = 0.26 (Pick 5) and ~0.00 (Pick 6) — naive multiplication of leg odds explains essentially nothing of payoff variance. This contrasts sharply with Pick 3 (0.75) and Pick 4 (0.66). At Pick 5/6 depth, pool and carryover dynamics dominate.
+
+2. **Carryover is the single largest predictor.** Adding `log_carryover` to naive parlay: +0.31 R² (Pick 5), +0.33 R² (Pick 6). Coefficient is NEGATIVE (-0.45 / -0.32) — when controlling for pool size, high-carryover days attract a flood of syndicate money producing more winners, so per-ticket payoff is lower than an equal-sized non-carryover pool.
+
+3. **bad_fav_legs predictively inert across all four horizontals** (Pick 3 +0.0003, Pick 4 +0.0004, Pick 5 +0.001, Pick 6 −0.001). Audit's WA-T1.3 concern is fully disproven.
+
+4. **The current `fit_payoff_models.py:183-184` actively excludes carryover for Pick 6:** `if bet_type == "PICK_6": extra = " AND (e.carryover IS NULL OR e.carryover = 0)"`. Since 54% of Pick 6 standard rows have carryover, the model is fit on the minority of pool dynamics, missing the variation that would teach it pool behavior. Pick 5 doesn't have this exclusion but also doesn't include `log_carryover` as a feature, so it can't distinguish carryover-vs-not within its sample.
+
+**Note:** Pick 6 is +EV in two distinct cases — (a) carryover days where pool dynamics lower effective takeout, and (b) any day where the bettor's structural edge (vulnerable-favorite plays, contrarian leg construction) creates a payoff differential vs the public's chalk ticket. Race-day-sim should surface both. The existing model handles neither correctly; it predicts non-carryover days but without a model of how pool dynamics shape payoffs, even non-carryover predictions are noisy.
+
+**Severity reclassified:**
+- WA-T1.3 (bad_fav_legs): LOW across all bet types — disproven
+- Existing Pick 5/6 OLS models: HIGH urgency to rebuild — include all `pool_type = STANDARD` rows (carryover and non-carryover both), add `log_carryover` as a feature, exclude only `pool_type = JACKPOT`. Race-day-sim needs working payoff projections for both carryover-EV plays and structural-edge plays.
 
 ### WA-T1.4 — Trainer profiles are aggregate, not point-in-time
 
-**Files:** `wagering-analytics/scripts/compute_trainer_profiles.py:14-16`, `wagering-analytics/docs/market-bias-analysis.md:83-84`
+**Files:** `wagering-analytics/scripts/compute_trainer_profiles.py:14-16, 33`, `wagering-analytics/docs/market-bias-analysis.md:83-84`
 
-**Problem:** AN2 spec mandates point-in-time computation. Implementation publishes career-aggregate (2005-2017) A/E. Race-day-sim using these profiles for a 2010 race gets future data.
+**Status (2026-05-27):** STRUCTURAL PROBLEM CONFIRMED; NO CURRENT LEAKAGE in race-day-sim — table is unused there.
 
-**Verification approach:** Same class of bug as the velocity curves. Check that any consumer of `trainer_ae_profiles` is actually using race-time-bounded values, not the static table.
+**Problem:** `compute_trainer_profiles.py:33` sets `DATE_RANGE = ("2005-01-01", "2017-12-31")` and groups all queries within it. The resulting `trainer_ae_profiles` table contains a single career-aggregate A/E per trainer per dimension, computed across the full 13-year window. From any pre-2017 race's perspective this contains future information.
 
-**Fix:** Either (a) build a materialized view computed point-in-time per starter, or (b) ensure all consumers use the in-blinder query (`load_market_bias`) which already does point-in-time computation. Currently race-day-sim's `load_market_bias` correctly uses point-in-time CTEs, but the static `trainer_ae_profiles` table exists as a tempting shortcut.
+**Verification (2026-05-27):**
+1. Confirmed by code review and DB sample. For Calhoun, full-career A/E = 0.870 vs as-of-2010-06-01 A/E = 0.916 (delta = -0.046). Smaller deltas (0.003-0.010) for other top trainers, but sign and magnitude unpredictable per trainer.
+2. **Searched all of race-day-sim/src/, scripts/, notebooks/ for `trainer_ae_profiles` references — zero hits.** Race-day-sim never queries the static table during simulation.
+3. `blinder.py:load_market_bias` (lines 156-216) computes trainer A/E point-in-time via CTEs (`date < race_date`) across all 5 dimensions. This is the actual live input — already correct.
 
-**Severity:** HIGH if anything reads the static table for live simulation. Less critical if only used for research.
+**Conclusion:** The static table is research scratch space, not a live simulation input. The structural leakage exists but is currently benign. The risk is anticipatory: someone could later query the static table as a "shortcut," at which point blinded simulations would silently leak future data.
+
+**Recommended fix (in order of preference):**
+1. **Drop the table entirely.** No code path reads it; existence is the only risk. Adjust CLAUDE.md (currently lists `trainer_ae_profiles` as a race-day-sim dependency, which is incorrect).
+2. Or rename to `trainer_ae_profiles_research_only` or move to a research schema, making misuse self-evident.
+3. Or keep + document with prominent "DO NOT USE FOR LIVE SIMULATION" header in the script and CLAUDE.md.
+
+**Severity reclassified:** LOW (no live leakage). The audit's anticipatory framing was right — this is a footgun — but not a current bug. Recommend Option 1 as a one-line fix.
 
 ### WA-T1.5 — Jitter calibration measures wrong quantity
 
 **File:** `wagering-analytics/scripts/compute_jitter_calibration.py:35-86, 117`
 
-**Problem:** Computes `STDDEV(log_winner_odds - leg1_log_odds)` across exotic_ids. This measures the spread of log-odds across all winners in any leg — not within-race odds drift between bet placement and leg off-time. Output sigmas are flat at ~1.0 across all legs of all bet types — the spread of the closing-odds distribution itself, not what was intended.
+**Status (2026-05-27):** STRUCTURAL PROBLEM CONFIRMED; NO LIVE LEAKAGE — calibration is unused.
 
-A sigma of 1.0 in log-space means odds projections span 2.7× per std dev — drowns the signal entirely.
+**Problem:** Script's stated intent is to capture within-race odds drift between bet placement and post-time. Actual SQL computes `STDDEV(log_winner_odds - leg1_log_odds)` across exotic_ids — i.e., the variance of where leg-2 winners closed relative to leg-1 winners across all sequences. That's just twice the within-leg odds-distribution variance (winners are independent draws), not a measure of drift.
 
-**Verification approach:** Inspect `models/jitter_calibration.json`. If leg-1 sigma is non-zero (it is) and later legs are all clustered around 1.0 with no monotonic increase, the bug is confirmed.
+Output sigma ≈ 1.0 across all leg positions (1.01, 1.01, 1.02, 0.99, 0.98). Within-leg stddev_log_odds is ~0.73, so √2 × 0.73 ≈ 1.03 — exactly what you'd predict if the script measures inter-sequence spread, not drift.
 
-**Fix:** Requires intra-race odds time series (not currently in the database). Document as known limitation. Race-day-sim should not use these jitter values for horizontal pool projection until methodology is fixed.
+A σ=1.0 log-normal jitter means each odds projection is multiplied by `e^N(0,1)`, spanning ~2.7× per std dev. 95% CI = 0.14× to 7.4×. Signal is drowned.
 
-**Severity:** HIGH. Currently invalidates horizontal pool projection.
+**Verification (2026-05-27):**
+1. Inspected `models/jitter_calibration.json`: σ values are 1.0102, 1.0127, 1.0157, 0.9938, 0.9759 across legs 2-6. Flat, not monotonically increasing — consistent with measuring the wrong quantity.
+2. Searched race-day-sim for jitter consumers: `horizontal.py:29` defines `get_leg_sigma`, but **no other code calls it.** `estimate_horizontal_value` (the function that actually computes parlay probability) ignores jitter entirely — uses leg odds directly.
+3. The intra-race odds time series needed for a real jitter calibration is **not in the database** — `race_probabilities.win_prob` is closing-only.
+
+**Conclusion:** Calibration is structurally broken AND unused. Race-day-sim's horizontal projections currently rely on closing-odds parlay multiplication, not jitter-perturbed odds.
+
+**Architectural reframe — jitter is a non-problem for blinded backtests:** Jitter exists to model uncertainty about future closing odds when constructing a multi-leg ticket live (you have leg-1 closing odds but legs 2/3/4 are still 30-90 min from post). Race-day-sim is a blinded backtest — `blinder.load_pre_race_card()` loads closing odds for every race on the card before any bet is constructed. The simulator already knows every leg's closing odds with zero uncertainty. There is nothing to jitter.
+
+Jitter would matter only in: (1) live wagering mode, (2) explicit what-if sensitivity analysis, (3) adversarial "could a real bettor have built this?" testing. None are on the current roadmap.
+
+**Recommended fix:**
+1. Delete `get_leg_sigma` from `race-day-sim/src/sim/horizontal.py`.
+2. Delete `race-day-sim/models/jitter_calibration.json`.
+3. Delete `wagering-analytics/scripts/compute_jitter_calibration.py`.
+4. Document: "Jitter applies to live betting, not blinded backtests; defer until live mode is roadmapped."
+
+**Severity reclassified:** LOW. Same pattern as WA-T1.4 — broken file with no consumers, but the underlying premise (future-leg uncertainty) doesn't apply to backtest-mode race-day-sim, so this isn't even worth a heuristic placeholder. Drop entirely.
 
 ### RDS-T1.1 — TEMPERATURE = 6500ms produces nearly-uniform probabilities
 
 **Files:** `race-day-sim/src/sim/probability.py:17, 28`
 
-**Problem:** Sprint races have ~70K ms total time, within-race spread of 200-1000ms. `exp(-1000/6500) = 0.86` — even a 3-length gap barely affects relative probability. The fastest projected horse barely dominates the slowest in the softmax.
+**Status (2026-05-27):** CONFIRMED — high-confidence finding, likely a major contributor to -42% ROI.
 
-**Verification approach:** For a typical race, compute `model_probs_from_curves` at TEMPERATURE = 6500 and at TEMPERATURE = 300. Compare distribution. The 6500 version should be near-uniform; the 300 version should show meaningful separation.
+**Problem:** `model_probs_from_curves` softmax uses `temperature = 6500.0` (in ms). With T = 6500, the time gap that halves probability is `T × ln(2) ≈ 4500ms` — about 22 lengths. Real within-race predicted-time spreads are nowhere near that.
 
-Then calibrate properly: for fields where the model has clear strength differences, what TEMPERATURE produces a probability distribution that matches the relative win rates of those strength tiers in historical data?
+**Verification (2026-05-27):**
 
-**Fix:** Recalibrate TEMPERATURE. Likely needs to be 200-500ms, not 6500ms. Verify with held-out data.
+1. **Empirical within-race time spreads** (581 races, sample week of June 2014):
+   - Mean max-min spread: **2,805 ms** (≈14 lengths)
+   - Mean IQR (P75 − P25): **1,055 ms** (≈5.3 lengths)
+   - Mean stddev: **972 ms** (≈4.9 lengths)
+   - Max spread: 14,704 ms; min spread: 588 ms
 
-**Severity:** HIGH. Affects every Benter-combined probability throughout the system.
+2. **Probability distributions for an 8-horse field with even spacing across 2,800ms:**
+
+| T | p₁ | p₂ | p₃ | p₄ | p₅ | p₆ | p₇ | p₈ | p₁/p₈ ratio |
+|---|---|---|---|---|---|---|---|---|---|
+| 200 | 87% | 12% | 2% | <1% | 0 | 0 | 0 | 0 | 1.2M:1 |
+| 500 | 55% | 25% | 11% | 5% | 2% | 1% | <1% | <1% | 270:1 |
+| 1000 | 34% | 23% | 15% | 10% | 7% | 5% | 3% | 2% | 16:1 |
+| 2000 | 23% | 19% | 15% | 13% | 10% | 8% | 7% | 6% | 4:1 |
+| **6500** | **15%** | **14%** | **14%** | **13%** | **12%** | **11%** | **11%** | **10%** | **1.5:1** |
+
+At T=6500, **the fastest horse has only a 1.5× edge over the slowest in a 14-length-spread field**. The model layer is producing nearly-uniform probabilities.
+
+**Cascade effect through Benter:** `benter_combine` does `α × log(model_prob) + β × log(odds_prob)` with α=1.89, β=1.0. When model_prob is near-uniform, log(model_prob) is near-zero across all horses, so the α term contributes nothing. **The Benter output becomes a near-pure echo of the market.** That means:
+- Edge-vs-market is mostly noise
+- The system is "betting based on a model that has no opinion"
+- Likely a major contributor to the documented -42% ROI
+
+**Fix:** Recalibrate TEMPERATURE. Based on observed time-spreads, **T ≈ 1000ms** produces realistic dispersion (favorite ~25-35%, longshot 2-7%). A more rigorous approach: fit T jointly with α via MLE on historical race outcomes (logistic regression on actual finish vs predicted-time differences). For now, use T = 1000ms as a defensible default and document the calibration improvement as a follow-up.
+
+**Severity:** HIGH (confirmed). One of the single most impactful issues identified in this audit. Affects every Benter-combined probability and every downstream edge calculation. Almost certainly contributing to negative ROI.
 
 ### RDS-T1.2 — Off-turf credit applied to entire field, not just favorite
 
-**File:** `race-day-sim/src/sim/ratings.py:268-269`
+**File:** `race-day-sim/src/sim/ratings.py:267-268` (pre-fix)
 
-**Problem:**
+**Status (2026-05-27):** CONFIRMED and FIXED.
+
+**Problem (verified):**
 ```python
 if _flag("off_turf"):
     multiplier *= 1.050
 ```
 
-Research finding (Item 9): off-turf **favorite** A/E = 0.884. Specific to favorite. Code applies +5% to every horse in off-turf races, inverting the research conclusion which said "use favorite strongly, fade turf-only horses."
+Research finding 9 (`research-findings.md:78, 134`): off-turf favorite gets +7.5% lift (A/E = 0.884 lift); the recommendation is "use the favorite strongly, fade turf-only horses underneath." The original code applied a +5% lift to every starter in off-turf races, inverting the research — turf-only horses (which research says to fade) got the same boost as the favorite (which research says to lean on).
 
-**Verification approach:** Code review confirms; no DB query needed. Just check the ratings.py logic against the research-findings.md table.
+**Fix applied:**
+- `bias_multiplier()` now accepts `is_favorite: bool = False` parameter.
+- Off-turf credit raised from 1.050 → 1.075 (matching the research +7.5% number) and gated to favorites only.
+- Caller (`format_race_ratings`) identifies favorite by lowest closing odds and passes through.
+- Complementary "fade turf-only horses underneath" remains TODO — needs each horse's recent surface history (separate access path).
 
 **Fix:** Only apply when the horse is the favorite (from `s.choice == 1`). Add a separate negative multiplier for turf-only horses on dirt.
 
@@ -187,55 +327,104 @@ Research finding (Item 9): off-turf **favorite** A/E = 0.884. Specific to favori
 
 ### RDS-T1.3 — Turf rating prior double-counts surface offset
 
-**File:** `race-day-sim/src/sim/ratings.py:134-136`
+**File:** `race-day-sim/src/sim/ratings.py:134-136` (pre-fix)
 
-**Problem:**
-```python
-if surface == "Turf":
-    base += 5
-```
+**Status (2026-05-27):** CONFIRMED and FIXED.
 
-The canonical anchor in `_get_anchor` already returns `anchor_rating = 112` for turf races. The class-rating ladder used as `base` is on the dirt scale. Adding +5 on top either understates turf class (a $20K turf claimer gets 105, should be ~112) or misclassifies tiers depending on purse.
+**Problem:** Original code did `if surface == "Turf": base += 5`, applied on top of a dirt-scale class ladder. But `_get_anchor` already returns `anchor_rating = 112` for turf (vs 100 for dirt) — a +12 universal-scale offset. The +5 fudge was inconsistent with the anchor: a $25K turf claimer's physics rating anchored to ~112 while the prior anchored to ~110. The misalignment grew with purse band.
 
-**Verification approach:** Code review against rating-calibration-plan.md. The canonical anchor logic and the prior computation should agree on what 112 means.
+This affected **every turf rating**, not just prior-only horses, because `format_race_ratings` blends `w × physics + (1-w) × prior`.
 
-**Fix:** Remove the +5 offset. The canonical anchor in the rating already encodes the turf scale. The class-rating ladder used as the prior should ALSO be on the universal scale (so a turf claiming race's prior is naturally 112, not 100+5).
+**Fix applied:**
+- Replaced single `_CLASS_RATINGS` dict with `_CLASS_RATINGS_MAIN` (Dirt + Synthetic, anchor 100) and `_CLASS_RATINGS_TURF` (= main + 12, anchor 112). Constant `_TURF_CLASS_OFFSET = 12`. The naming reflects the canonical-anchor table grouping: Dirt and Synthetic both anchor to 100; only Turf elevates.
+- `compute_prior_rating()` picks the turf ladder when `surface == "Turf"`, main ladder otherwise (Dirt, Synthetic, or unknown).
+- Removed the `if surface == "Turf": base += 5` line. The +12 also propagates through the claiming-purse refinement branch.
 
-**Severity:** HIGH. Misrates all turf horses.
+**Verified:** Synthetic spot-check confirms it anchors to 100 (matches `_get_anchor("Synthetic", 6.0)[1] = 100`): `compute_prior_rating("CLAIMING", 25000, "Synthetic") = 105`, `compute_prior_rating("ALLOWANCE", 0, "Synthetic") = 114`. Turf spot-check: `compute_prior_rating("CLAIMING", 25000, "Turf") = 117` (= 105 + 12), `compute_prior_rating("ALLOWANCE", 0, "Turf") = 126` (= 114 + 12). All priors now align with physics anchor.
+
+**Severity reclassified:** HIGH (was misrating every turf horse, even those with strong physics) → FIXED.
 
 ### RDS-T1.4 — Surface-switch trainer A/E double-counts
 
-**File:** `race-day-sim/src/sim/ratings.py:284-292, 325-328`
+**File:** `race-day-sim/src/sim/ratings.py:300-309, 341-345` (pre-fix)
 
-**Problem:** Generic surface-switch multiplier (Synthetic→Turf 1.075) PLUS trainer-specific switch A/E. Trainer's A/E already incorporates the population pattern (their A/E was measured on actual surface switches).
+**Status (2026-05-27):** CONFIRMED and FIXED.
 
-**Verification approach:** Code review. Compare against the class-drop logic which DOES correctly undo the generic before applying trainer-specific.
+**Problem:** Generic surface-switch multiplier (Synthetic→Turf = 1.075, etc.) was applied unconditionally. Then later, if the trainer had a `trainer_switch_ae` record with ≥10 switches, the trainer-specific multiplier (`trainer_switch_ae / 0.80`) was applied multiplicatively on top. The trainer's A/E was measured on their actual surface switches — so the population effect is **already baked in**. A trainer matching the population average had their effect counted twice (1.075 × 1.075 = 1.156).
 
-**Fix:** Either undo the generic surface-switch multiplier when trainer-specific is applied (mirror the drop logic), or remove the generic since the trainer-specific should subsume it.
+The class-drop block immediately below correctly undoes the generic before applying trainer-specific (`multiplier /= 1.029` then apply `trainer_drop_ae / 0.80`). Surface-switch did not.
 
-**Severity:** HIGH. Compounds artificially.
+**Fix applied:**
+- Captured the generic surface-switch multiplier in a local `surface_switch_mult` variable when applied.
+- Trainer-specific block now divides by `surface_switch_mult` (undo generic) before multiplying by `trainer_switch_ae / BASELINE_AE`. Mirrors the class-drop pattern.
+- Generic remains the fallback when trainer has no record / insufficient sample.
 
-### RDS-T1.5 — Horizontal parlay_prob unnormalized for takeout
+**Verified with 4-case sanity test:**
+- Generic-only (no trainer record): 1.075 ✅
+- Trainer A/E = 1.0 (strong): 1.250, not 1.344 ✅
+- Trainer matches pop avg (A/E ≈ 0.86): 1.075, not 1.156 ✅ (was the double-count case)
+- No switch: 1.000 ✅
 
-**File:** `race-day-sim/src/sim/horizontal.py:135`
+**Severity reclassified:** HIGH (compounded artificially across all surface-switching horses) → FIXED.
 
-**Problem:** `leg_prob = sum(1.0 / (s.get("odds", 99) + 1) for s in selections)` — sums raw `1/(odds+1)` per leg without overround correction. Result: leg_prob is systematically under-estimated by the takeout factor (~17%), and parlay_prob compounds the error across N legs.
+### RDS-T1.5 — Horizontal parlay_prob unnormalized for overround
 
-`fair_payoff = (1-takeout)/parlay_prob` is then over-estimated, making horizontal tickets look more attractive than they are.
+**File:** `race-day-sim/src/sim/horizontal.py:135` (pre-fix)
 
-**Verification approach:** Compute leg_prob for a typical race two ways: raw sum, and normalized by total field overround. The difference is the bias.
+**Status (2026-05-27):** CONFIRMED with corrected direction; FIXED.
 
-**Fix:** Normalize by full-field overround:
-```python
-field_overround = sum(1.0/(o+1) for o in all_field_odds)
-leg_prob = sum(1.0/(s.odds+1) for s in selections) / field_overround
-```
+**Problem:** `leg_prob = sum(1.0 / (s.get("odds", 99) + 1) for s in selections)` summed raw `1/(odds+1)` per leg without overround correction. Across a full field with 17% takeout, raw `1/(odds+1)` sums to ~1.17, not 1.0 — so each horse's raw value **over-estimates** true probability.
 
-**Severity:** HIGH. Distorts every horizontal evaluation.
+**Direction correction:** The audit said "leg_prob is under-estimated, payoff is over-estimated, tickets look more attractive than they are." That was backwards. Raw `1/(odds+1)` over-estimates probability, so leg_prob is over-estimated, parlay_prob is over-estimated, and `fair_payoff = (1-takeout)/parlay_prob` is **under**-estimated. Tickets looked **less** attractive than they are. The system was too pessimistic, not too optimistic.
+
+**Verified with sanity test:**
+- Pick 3 with 3/1 favorites in each leg, 8-horse fields (overround 1.16):
+  - Without normalization: parlay_prob = 0.0156, fair_payoff = $48
+  - With normalization: parlay_prob = 0.0100, fair_payoff = $75
+- The system was ~36% too pessimistic about fair payoff per Pick 3.
+
+**Fix applied:**
+- Added `all_odds` field to each leg dict in the API.
+- `estimate_horizontal_value` now normalizes by the field's overround when `all_odds` is supplied, falls back to raw sum (with a docstring warning that raw values are biased) when not.
+
+**Note:** `estimate_horizontal_value` is currently imported but unused in `simulate_race_day.py` — same pattern as several other findings today. The fix is preventive: when this is wired into actual ticket-construction logic, it'll produce honest fair values out of the gate.
+
+**Severity reclassified:** HIGH (would distort every horizontal evaluation if wired up; system would systematically underbet horizontal value) → FIXED.
 
 ---
 
 ## Tier 2: Significant but localized issues
+
+### RKM coverage / discontinuity findings (added 2026-05-27 from sim run on GP 2014-09-06)
+
+**RKM-T2.1 — Sprint/route binary cutoff produces hard discontinuity at 6.5f**
+
+Surfaced when investigating low coverage on R10/R11 (2yo FSS stakes at 7f Dirt, only 1/8 and 1/13 horses RATED). Root cause: the field is dominated by 2yos with rich sprint data but no route data. Current `(horse_key, surface, distance_zone)` partition with `zone = "sprint" if furlongs <= 6.5 else "route"` drops them to UNRATED for any 7f+ race.
+
+Stop-gap fix applied 2026-05-27: cross-zone fallback in `blinder.py`. When primary-zone curve is missing, use opposite-zone curve with surface-specific shift and confidence haircut.
+
+Empirical cross-zone correlations (117K paired starters, route − sprint, same horse, same surface):
+- Dirt: r(v0) = 0.38, Δv0 = -2.81 ft/s, Δdecay = -1.17
+- Synthetic: r(v0) = 0.51, Δv0 = -3.33 ft/s, Δdecay = -1.21
+- Turf: r(v0) = 0.25, Δv0 = -4.09 ft/s, Δdecay = -0.78
+
+Original spec used 0.34 as a single global cross-zone factor — that was actually the cross-*surface* correlation (dirt ↔ turf, route only). Different dimension. Replaced with surface-specific cross-zone numbers from direct measurement.
+
+**Remaining gaps:** the binary cutoff is itself too coarse. Distance distribution shows 7 distances cover ~84% of races (5f, 5.5f, 6f, 6.5f, 7f, 8f, 8.3f, 8.5f). 7f is a "tweener" — currently classified as route but physiologically closer to a long sprint. A 4-band partition (SHORT_SPRINT < 6f, MID_SPRINT 6-6.5f, TWEENER 7-7.5f, ROUTE ≥ 8f) would capture more of the gradient, at the cost of splitting curve data and requiring a recompute of `rkm_velocity_curves`.
+
+**RKM-T2.2 — `rkm_current_form` is single-dimensional (no surface/zone partition)**
+
+Schema is `(starter_id, race_id, current_v0, current_decay, ...)`. One row per starter, no surface or distance_zone. This means a horse's "current form" mixes recent sprint and recent route observations, and recent dirt and recent turf. A horse with strong sprint form and rusty route form has a single muddled `current_v0`.
+
+Should be `(starter_id, surface, distance_zone)` or finer (matching whatever zone scheme is settled in T2.1). Requires rebuilding the form-snapshot computation in `rkm/scripts/compute_form.py` with surface- and zone-aware partitioning.
+
+**Severity:** MEDIUM — affects accuracy of `current_v0`/`current_decay` for any horse who's raced multiple zones recently, especially zone-switchers or surface-switchers. Same kind of confounding as RKM-T2.1 but for the recent-form layer.
+
+**RKM-T2.3 — RKM-T1.2 prerequisite for cross-zone fallback safety**
+
+The bare-name `SPLIT_PART(vc.horse_key, '|', 1) = s.horse` join in `blinder.py` was already known (RKM-T1.2). The cross-zone fallback adds a second LEFT JOIN against `rkm_velocity_curves` on bare name, which **doubles the row-multiplication risk** when a starter's name collides with another horse_key. Confirmed on GP 2014-09-06 R10/R11 — "Of Course" matched 3 horse_keys (1994/2002/2012) and "Leap Year Luck" matched 2 (1996/2012), inflating R10 from 8 → 9 rows and R11 from 13 → 14.
+
+Cross-zone fallback is structurally sound but relies on RKM-T1.2 being fixed first to avoid attaching wrong-horse data. Treat T1.2 as a hard prerequisite for safe T2.1 deployment.
 
 ### Cross-cutting
 
@@ -274,66 +463,80 @@ A second-pass audit examined `simulation-protocol.md`, `wagering-framework.md`, 
 
 ### PROTO-T3.1 — `register_bet()` performs zero validation
 
-**File:** `scripts/run_simulation.py:164-169`
+**File:** `scripts/run_simulation.py:164-169` (pre-fix)
 
-No checks for: programs in race, structural validity (TRIFECTA needs 3 positions), pool minimums, win-bet minimum odds (3.0/1 — labeled but not enforced), horizontal conviction-leg minimum (constant defined, never read), bet type whitelist. **Critically: the evaluator only handles WIN and EXACTA — registered TRIFECTA/SUPERFECTA/PICK_N silently never match → counted as MISS even if they cash.** Real bug, not just a protocol violation.
+**Status (2026-05-27):** CONFIRMED and FIXED.
 
-**Verification approach:** No DB needed. Re-run a previous sim day's bets through `reveal_and_evaluate()` with a registered TRIFECTA — confirm it's marked MISS regardless of outcome. Cross-reference with the actual trifecta payoff to see if cash was hidden.
+**Problem:** Original `register_bet()` performed NO checks. Original `reveal_and_evaluate()` only handled WIN and EXACTA. Any TRIFECTA/SUPERFECTA/PICK_N registered would silently fall through to "✗ MISS" regardless of outcome. **Material consequence:** prior sim days that registered trifectas (e.g., GP 2014-09-06's documented "TRIFECTA 12-5-10: $292.90 per dollar" play) had hits silently miscounted as losses. The cumulative -42% ROI is therefore a **lower bound** on actual realized performance — true ROI may be less negative.
 
-**Fix:** In `register_bet()` add a validation block:
-- Look up the race's program numbers; raise if any in `programs` aren't in the field
-- Whitelist `bet_type` against an enum of supported types
-- For each bet_type, validate structure (TRIFECTA = 3 position lists; PICK3 = 3 leg lists)
-- Check `MIN_ODDS_WIN_BET` against the horse's odds for WIN bets
-- Check pool size against type-specific minimum (after pool data loaded)
-- Check horizontal conviction-leg count against `MIN_HORIZONTAL_CONVICTION_LEGS`
+**Principle (added 2026-05-27 from user feedback):** Bet registration and result evaluation must be deterministic — same registered bet + same race result must always produce the same (hit, payout) result. Structural validation at the registration boundary; pure-function evaluation downstream.
 
-Then extend `reveal_and_evaluate()` to handle TRIFECTA, SUPERFECTA, QUINELLA, DAILY_DOUBLE, PICK_3/4/5/6. Each needs a matching helper that takes the official_position-sorted top finishers and the bet's program structure, returns (hit, payout). PICK_N needs to walk leg-by-leg matching against each race's winner.
+**Fix applied:**
+- New `_validate_bet()` enforces:
+  - bet_type whitelist (rejects ITP-forbidden PLACE/SHOW; rejects unknown types)
+  - race exists in card; programs exist in race's field
+  - structural validation per bet type (vertical: N position lists; horizontal: N leg lists)
+  - WIN bets meet `MIN_ODDS_WIN_BET = 3.0`
+  - amount > 0
+- `register_bet(..., force=False)` calls validation; raises ValueError on invalid input. `force=True` available for testing/override.
+- New `_build_race_data()` pre-computes deterministic per-race finish + payoff dict (loads ALL exotic types: EXACTA, TRIFECTA, SUPERFECTA, QUINELLA, DAILY_DOUBLE, PICK_3/4/5/6).
+- New `_evaluate_bet()` pure function: bet + race_data → (hit, payout). Handles all supported bet types including horizontals (walks leg-by-leg). Uses `official_position` (DQ-honoring).
+- Top-4 finish display (was top-3) so superfecta combos are inspectable.
 
-**Severity:** HIGH
+**Verified:** Tested validation rejects all 5 invalid input cases (program not in race, sub-3.0 WIN, PLACE bet, malformed TRIFECTA structure, etc.). Tested evaluator correctly grades a TRIFECTA bet that previously would have silently MISSED. WIN payout math `(odds + 1) × stake` confirmed at $44 for #7 at 3.4/1 with $10 stake.
+
+**Severity reclassified:** HIGH (was material ROI miscount + structural fragility) → FIXED.
 
 ### PROTO-T3.2 — Equity test computed but never enforced as a gate
 
 **Files:** `src/sim/horizontal.py:39-101`, `src/sim/payoff.py:168-209`, `scripts/run_simulation.py`
 
-`evaluate_leg_selections()` and `estimate_combo_value()` compute equity ratios. But:
-- `run_simulation.py` doesn't import either module
-- `simulate_race_day.py` uses them only for display, never gating
-- `flashing_stop_sign` flag is computed but never consulted
+**Status (2026-05-28):** CONFIRMED, FIXED for horizontal/vertical legs as soft gate.
 
-The single most-emphasized rule in the protocol ("Every combination must pass the equity test before inclusion") is purely advisory.
+**Problem:** `evaluate_leg_selections()` and `estimate_combo_value()` compute equity ratios. But none of those values are consulted by `register_bet()`. `flashing_stop_sign` was set but never read. The single most-emphasized protocol rule ("every combination must pass the equity test before inclusion") was advisory only.
 
-**Verification approach:** No DB needed. Grep for `flashing_stop_sign` and `equity_ratio` usages — confirm they're only in print statements, not in conditionals that reject bets.
+**Fix applied:**
+- New `_equity_warnings(race, bet_type, programs)` method on `SimDay` checks each selected horse's equity ratio per leg against the spec's threshold.
+- `register_bet(..., force=False)` calls it after structural validation; prints `[equity warning]` lines for any horse that loses equity per Step E.4. Bet is still registered (soft gate); use `force=True` to silence warnings.
+- Logic applies to all multi-position bets (TRIFECTA/SUPERFECTA/HI_5/EXACTA underneath positions, PICK_3/4/5/6 leg positions).
 
-**Fix:** Add an `equity_check()` method on `SimDay` that takes a proposed bet, calls into `horizontal.evaluate_leg_selections()` for horizontals or `payoff.estimate_combo_value()` for verticals, and returns `(passes, reasons)`. Call this from `register_bet()` BEFORE appending to the bets list. If `passes=False`, raise an exception or print a warning + require an override flag (`force=True`) to register against the protocol's recommendation.
+**Verified:**
+- TRIFECTA 4-deep over a 2.3 chalk: warnings fire correctly (ratio 0.82 < 1.0).
+- TRIFECTA 2-deep over a 0.4 chalk: warnings fire (ratio 0.70).
+- TRIFECTA 3-deep over 2.3 chalk: no warning (ratio 1.10 — barely gains).
+- 1-deep selections never warn.
+- `force=True` suppresses warnings entirely.
 
-Depends on PROTO-T3.3 being fixed first (the equity formula itself must be correct before gating on it).
+**Severity reclassified:** HIGH → FIXED (soft gate). Per-combo vertical equity (full overlay × prob × cost) deferred — see notes in PROTO-T3.3.
 
-**Severity:** HIGH
+### PROTO-T3.3 — Horizontal equity formula
 
-### PROTO-T3.3 — Horizontal equity formula is wrong (uses cheap shortcut)
+**File:** `src/sim/horizontal.py:39-58` (pre-fix)
 
-**File:** `src/sim/horizontal.py:39-58`
+**Status (2026-05-28):** Audit re-evaluated; AUDIT CLAIM PARTIALLY DISPROVEN — formula was numerically correct, docstring was misleading.
 
-`estimate_leg_equity()` returns `(odds + 1) / n_horses_used` — treats per-horse stake as `ticket_cost / N` per-leg, ignoring full ticket geometry. The protocol's Step E.4 worked example uses a different (correct) formula based on per-combo cost vs surviving combo value across the full ticket. The two formulas can disagree — a horse "loses equity" in one but "gains" in the other.
+**Problem (original framing):** Audit said `estimate_leg_equity()` used a "cheap shortcut" that disagrees with the protocol's spec formula. Worked example was: "two formulas can disagree — a horse 'loses in one but gains in the other'."
 
-The `ticket_cost_per_combo` parameter is accepted but never used.
+**Re-analysis (2026-05-28):** Worked the spec example through both formulas:
+- Spec: `(odds + 1) × surviving_combos / total_combos`. For a 3×2×2 Pick 3 with leg 1 width 3, this is `(odds + 1) × 4 / 12`.
+- Code: `(odds + 1) / n_horses_used = (odds + 1) / 3`.
+- These collapse to the same number whenever `n_horses_used == total_combos / surviving_combos`, which is true for any single leg of a horizontal ticket and any single position of a vertical exotic.
 
-**Verification approach:** Construct the protocol's worked example as a test case ($120 Pick 3, 3×2×2 = 12 combos, $10/combo). Pass it through both formulas. Confirm cheap formula and protocol formula disagree on at least one horse's equity status.
+For the spec's 3/1 horse in 3×2×2: spec = 1.33, code = 1.33. For the spec's 6/5 horse: spec = 0.73, code = 0.73. **They never disagree** for the per-leg/per-position case the function handles.
 
-**Fix:** Rewrite `estimate_leg_equity()` to take the full leg structure (list of selections per leg) as input, not just one leg. The signature should be:
-```python
-def estimate_ticket_equity(leg_selections: list[list[dict]], total_cost: float)
-```
-For each combination (cartesian product of leg selections), compute:
-- `cost_per_combo = total_cost / n_combos`
-- For each horse in each leg: if that horse wins their leg, `surviving_combos = product of OTHER legs' widths`
-- `surviving_value_per_combo = parlay_payoff_at_their_odds_and_others_winning / surviving_combos` — this requires assumptions about other legs' winners (the protocol example assumes equal-prob across selections in other legs)
-- Compare `surviving_value_per_combo` to `cost_per_combo` to determine GAIN/LOSE equity
+**What was actually wrong:**
+- Docstring described a "per-horse stake = ticket_cost / N" model that isn't the spec's framing — confusing for readers.
+- `ticket_cost_per_combo` parameter accepted but unused.
+- Math was right; the explanation wasn't.
 
-Use the actually-prescribed formula from simulation-protocol.md Step E.4. Mark the old `estimate_leg_equity()` deprecated.
+**Fix applied:**
+- Rewrote docstring to explicitly show the spec equivalence and worked example.
+- Kept the implementation (math is correct).
+- `ticket_cost_per_combo` retained as default-1 for API compatibility; documented as unused (dimensionless ratio).
 
-**Severity:** HIGH
+**Per-combo vertical equity** (the `combo_equity = projected_payoff × prob / cost_per_combo` form from spec line 253) is approximately equal to overlay_ratio for $1-unit combos. A more rigorous per-combo gate inside register_bet would require enumerating cartesian products and looking up `harville_prob` + projected payoff for each — infrastructure exists in `payoff.py:estimate_combo_value` but orchestration deferred. Soft per-leg equity gate (PROTO-T3.2) is the practical version for now.
+
+**Severity reclassified:** HIGH → LOW (formula was right; docstring fixed). Future: add per-combo vertical equity computation, gate ticket-level "average equity" if useful.
 
 ### PROTO-T3.4 — Press mechanic is doc-only, no code support
 
@@ -351,33 +554,52 @@ Recommendation: code it. The press is a mechanical decision (combo identified as
 
 ### PROTO-T3.5 — "Never exclude favorite from 2nd/3rd unless total collapse" — unenforced
 
-The protocol's E.5 critical rule has no code enforcement. `payoff.py` accepts `fav_position=None` silently.
+**Status (2026-05-28):** FIXED as informational NOTE (not warning).
 
-**Verification approach:** No DB needed. Code-grep confirms.
+**Reframe:** Excluding the favorite from 2nd/3rd is a legitimate ITP play (kill-shot, vulnerable-favorite-misses-board, structural underlay). The bettor may explicitly want this. Original audit framing as a "warning" was too strong.
 
-**Fix:** In `register_bet()` validation block: if bet_type is TRIFECTA/SUPERFECTA and the favorite (program with lowest odds in the race, or `choice == 1`) is excluded from 2nd AND 3rd positions, require an explicit `expecting_total_collapse=True` flag in the rationale or a separate parameter. Otherwise warn or reject.
+**Fix applied:** `_favorite_exclusion_notes()` emits `[fav-excl note]` informationally when the favorite is excluded from both 2nd and 3rd in a TRIFECTA/SUPERFECTA. The bet registers regardless; the note surfaces awareness, not rejection.
 
-The "expecting total collapse" judgment can't be coded fully — but the SCAFFOLD can require the user to acknowledge it explicitly (preventing accidental exclusion). Cross-reference with the model's pace prediction: `pace_scenario == "CONTESTED_HIGH_DECAY"` AND fav has high decay = some justification; otherwise the exclusion is suspect.
+**Verified:** TRIFECTA in R2 excluding #3 (favorite at 2.3 odds) emits a note showing the math: "favorite #3 (at 2.3, ~30% to win, ~79% to hit board) excluded from 2nd and 3rd — ticket forfeits ~79% of outcomes; verify pace/form supports the exclusion." Counter-case emits nothing.
 
-**Severity:** HIGH
+**Severity reclassified:** HIGH → FIXED (informational with concrete math).
 
 ### PROTO-T3.6 — Decision tree (E.1 opinion classification) not implemented
 
-`protocol_check()` produces a flat list of horses with positive worst-case edge. The protocol's six-class taxonomy (STRONG specific, MODERATE specific, STRONG negative, STRUCTURAL, SPREAD, NO OPINION) and its mapping to pool selection is left to user judgment. CLAUDE.md claims the scaffold "applies protocol rules deterministically" — only one rule is actually deterministic.
+**Status (2026-05-28):** FIXED.
 
-**Verification approach:** No DB needed. Code review of `protocol_check()` confirms — only `has_conviction` boolean flag.
+**Fix applied:** New `classify_opinion(rn)` method on `SimDay` returns one of six classes per Step E.1, with concrete rationale and recommended bet expression per Step E.2:
 
-**Fix:** Add a `classify_opinion()` function called per race that returns one of the six categories with rationale:
-- STRONG specific: candidate exists with edge - band > 5
-- MODERATE specific: candidate exists with edge - band in (0, 5]
-- STRONG negative: fav_edge < -10 with band clear
-- STRUCTURAL: pace_scenario == CONTESTED_HIGH_DECAY AND multiple speed types AND multiple low-decay horses with positive Edge in middle of v0 distribution
-- SPREAD: 3+ candidates within ±3 Edge of each other, no clear leader
-- NO OPINION: top edge - band ≤ 0
+| Class | Trigger | Recommended |
+|---|---|---|
+| `STRONG_SPECIFIC` | candidate worst-case > 5 | WIN (or exotic key if odds < 3.0) |
+| `STRUCTURAL` | `CONTESTED_HIGH_DECAY` AND ≥2 closers with positive edge | TRIFECTA closers on top, speed under |
+| `STRONG_NEGATIVE` | fav edge < -10 AND band clear of zero | TRIFECTA/SUPERFECTA excluding fav on top |
+| `MODERATE_SPECIFIC` | candidate worst-case ∈ (0, 5] | horizontal leg (single/A-B) |
+| `SPREAD` | 3+ horses within 6 edge points of top | horizontal leg with A/B/C |
+| `NO_OPINION` | none of above | PASS |
 
-Then add `recommended_pool(opinion_type, race_summary)` returning one of WIN / EXACTA_KEY / TRIFECTA_EX_FAV / HORIZONTAL_LEG / PASS. Display these in the conviction-plays output so the user sees the protocol's recommendation BEFORE constructing tickets.
+The card-overview display now shows the opinion class per race; a separate "OPINIONS BY RACE" section gives full rationale + recommendation for any race with an opinion.
 
-**Severity:** HIGH
+**Verified on GP 2014-09-06:**
+- R2/R3 MODERATE_SPECIFIC (Tricky Call worst +2.9, J.M.'s Parade worst +0.5 → horizontal leg)
+- R4/R6 SPREAD with hints (actual favorite is unrated; rated-lowest-odds horse has strongly negative edge — surfaced as `Hint:` so bettor sees partial information)
+- R9 NO_OPINION (2/12 rated coverage too thin)
+- Stakes races correctly NO_OPINION on coverage
+
+Notes interact cleanly with downstream soft checks: a STRONG_NEGATIVE recommendation that excludes the favorite triggers the fav-excl note (which quantifies the structural cost) — the two views reinforce each other.
+
+**Equity table + basket structures (added 2026-05-28):** For STRONG_SPECIFIC / STRONG_NEGATIVE / STRUCTURAL classes, `propose_ticket_structures()` returns:
+
+1. **Per-horse equity table** showing each rated horse's odds, edge, role (FAV / CLOSER / SPEED), and equity ratio at depths N=2,3,4,5. Bettor reads off who survives at what spread depth without doing math in their head.
+2. **Class-specific basket suggestions** (primary + defensive), e.g.:
+   - STRONG_SPECIFIC: primary `KEY/AB/AB`, defensive `AB/KEY/AB`
+   - STRONG_NEGATIVE: primary `non-fav/non-fav/non-fav`, defensive `non-fav/non-fav/fav` (allows fav in 3rd if partial fade)
+   - STRUCTURAL: primary `closers/closers/speed-or-mid`, defensive `closers/closers/closers` (full pace-collapse play)
+
+**Bug fixed in this work:** Earlier STRONG_NEGATIVE used `rated.odds.idxmin()` to identify the favorite — that's the model's lowest-odds rated horse, not the public favorite. When the actual favorite is unrated (~30% of stakes-style races), the classifier was lying about which horse is the chalk. Fixed: STRONG_NEGATIVE only fires when the actual public favorite is rated AND has strongly-negative edge. Otherwise a `Hint:` surfaces the partial information honestly.
+
+**Severity reclassified:** HIGH → FIXED.
 
 ### PROTO-T3.7 — Two scaffolds, fragmented capabilities
 
@@ -393,13 +615,26 @@ Then add `recommended_pool(opinion_type, race_summary)` returning one of WIN / E
 
 **File:** `src/sim/kelly.py:56-97`
 
-`size_bets()` has no `fav_edge` parameter. Protocol prescribes basket weight scaling: `Fav Edge < -10` → maximum basket, `> +5` → small play / pass. WCMI sizing modifiers (1.5x for low WCMI, 0.25x for band crossing zero) also not implemented.
+**Status (2026-05-28):** FIXED.
 
-**Verification approach:** No DB needed. Code review confirms.
+**Fix applied:**
+- New `RaceContext` dataclass holding `fav_edge`, `wcmi`, `band_crosses_zero`, `n_independent_edges`, `carryover_active`, `pool_density_per_combo`. All optional.
+- New `context_multiplier(ctx)` composes the six modifiers per spec (simulation-protocol.md:345-350 Fav-Edge tiers; wagering-framework.md:241-248 WCMI/band/biases/carryover/pool-density).
+- `size_bets(..., context=...)` accepts the context, applies the modifier to base Kelly per horse and to the exotic budget, then caps via win_cap / max_exposure / exotic_cap.
+- Stack of modifiers clamped to [0.05×, 4.0×] so composed cases (e.g., overbet fav + carryover + low WCMI) can't blow past sane bounds.
 
-**Fix:** Extend `size_bets()` to take `race_context` (fav_edge, wcmi, band_crosses_zero, carryover_active) and apply the documented multipliers from wagering-framework.md:244. Order of operations: compute base Kelly, then apply context multipliers, then enforce MAX_EXPOSURE cap.
+**Verified:**
+- Fav-edge tiers: +8 → 0.25× (small play), -3 to +5 → 1.0×, -5 → 1.5×, -15 → 2.0×
+- WCMI: 0.05 → 1.5×, 0.30 → 0.5×
+- Band crosses zero: 0.25×
+- 2 confirming biases: 1.25² = 1.5625
+- Carryover: 2.0×
+- Thin pool (<$5/combo): 0.75×
+- Composed extreme (fav=-15 + carryover + 2 biases + low WCMI = math 9.375×) clamps to 4.0×
 
-**Severity:** MEDIUM
+**Note:** `RaceContext.band_crosses_zero` is interpreted at the race level — caller decides whether the basket as a whole is speculative. Per-horse band logic remains in `format_race_ratings`. `size_bets` returns `context_mult` so callers can render it transparently.
+
+**Severity reclassified:** MEDIUM → FIXED.
 
 ### PROTO-T3.9 — ITP concepts referenced as rules but not coded
 
@@ -419,45 +654,52 @@ Recommendation: code kill-shot rejection and win-only flag (low effort, prevent 
 
 ### PROTO-T3.10 — FTS rule contradiction across docs
 
-`itp-principles.md:124-126` says "FTS on top only, NEVER underneath." `wagering-framework.md:200-206` says "elite FTS trainer at 8/1 is a legitimate inclusion underneath." `ratings.py` follows the latter. Code and one doc agree; the other doc disagrees. A user reading itp-principles.md would think they're following protocol while actually breaking it.
+**Status (2026-05-28):** FIXED.
 
-**Verification approach:** Cross-read both docs and confirm. Already done.
+**Fix applied:** Updated `itp-principles.md:123-141` with a clear "this rule is superseded" note pointing to `wagering-framework.md`. The historical ITP guidance is preserved below the note for source-material accuracy. The note also clarifies that `itp-principles.md` is a historical reference, not the operational protocol — `wagering-framework.md` wins where they conflict.
 
-**Fix:** Resolve to the research-revised position (wagering-framework.md): trainer-signal FTS can be included underneath, generic FTS overbet as a group. Update `itp-principles.md` to either remove the "never underneath" rule or add a footnote: "Original ITP guidance, superseded by research finding that elite-FTS-trainer horses are exception to this rule." `itp-principles.md` should be marked clearly as historical reference for ITP source material, not the operational protocol.
-
-**Severity:** MEDIUM
+**Severity reclassified:** MEDIUM → FIXED (doc-only change).
 
 ### PROTO-T3.11 — Place betting forbidden by ITP, not blocked by code
 
-ITP doc says "never place bet." `register_bet()` accepts any bet_type string including "PLACE" — would be invested but never matched (silent loss).
+**Status (2026-05-28):** FIXED via PROTO-T3.1.
 
-**Verification approach:** No DB needed. Code-grep confirms.
+**Fix applied:** `_FORBIDDEN_BET_TYPES = {"PLACE", "SHOW"}` constant rejects these at `_validate_bet`. Verified: `register_bet(2, 'PLACE', ['7'], 10, ...)` raises `ValueError: PLACE is forbidden by ITP framework — use WIN or exotics`.
 
-**Fix:** Part of PROTO-T3.1 bet-type whitelist. Either omit PLACE/SHOW from the whitelist (rejecting them at registration) or add a `--allow-place` flag for users who explicitly want to override. Recommendation: omit by default, document that ITP forbids them.
-
-**Severity:** MEDIUM
+**Severity reclassified:** MEDIUM → FIXED.
 
 ### PROTO-T3.12 — Pool minimum thresholds never checked
 
-Protocol says trifectas need $20K+ pool, Pick 3/4 need $50K+. `tri_pool` is computed for display only, never compared against any threshold.
+**Status (2026-05-28):** FIXED with stake-relative check (replaced absolute thresholds).
 
-**Verification approach:** No DB needed. Code-grep confirms.
+**Re-evaluation:** The original `wagering-framework.md:105` line ("$20K+ for trifectas, $50K+ for Pick 3/4") was a single uncited claim. Coverage check on actual data showed those numbers reject most candidate races: only 7.7% of Pick 3 races have ≥$50K pools (median $6.5K), only 23% of Pick 4 ≥$75K. The thresholds were calibrated to big-track conditions, not the broad market.
 
-**Fix:** Add `MIN_POOL_BY_TYPE = {"TRIFECTA": 20000, "SUPERFECTA": 25000, "PICK_3": 50000, "PICK_4": 75000, "PICK_5": 100000, "PICK_6": 100000}` constant. In `register_bet()` validation, look up pool for the race × bet_type from `sim.pools` and reject if below threshold. Allow `--ignore-pool-min` override for testing.
+**Reframe:** The real concern isn't "pool too small" — it's "stake too large relative to pool" (your bet competing with itself for the pool). That's stake-relative, not absolute.
 
-**Severity:** MEDIUM
+**Fix applied:**
+- `_MAX_STAKE_PCT_OF_POOL` per bet type (0.5% for WPS/EX/QU/P5/P6; 1.0% for tri/super/DD/P3/P4).
+- `_DEAD_POOL_FLOOR = $1,000` absolute minimum (anything less is essentially a dead pool, payoffs unreliable regardless of stake).
+- `_pool_notes(race, bet_type, amount)` emits `[pool note]` if either condition fails. Informational, not gating.
+
+**Verified:** $10 stake into $19K Pick 3 pool (0.05%) → no note. $300 stake into same pool (1.55%) → note explains the concrete impact: "your own stake compresses the published per-$1 payoff by roughly 1.5%."
+
+**Severity reclassified:** MEDIUM → FIXED (informational, stake-aware).
 
 ### PROTO-T3.13 — Horizontal qualification (2+ conviction legs) unenforced
 
-`MIN_HORIZONTAL_CONVICTION_LEGS = 2` is defined at `run_simulation.py:33` and never referenced again. Users can register Pick 3 with 1 conviction leg + 3 random spread legs.
+**Status (2026-05-28):** FIXED as informational NOTE (not gate).
 
-**Verification approach:** Grep confirms. No DB needed.
+**Reframe:** A rigid "≥2 conviction legs required" rule is wrong. A single high-equity leg can carry an entire horizontal — e.g., a 1-in-3 chance of a 50/1 winner in one leg pays a parlay multiplier large enough to justify spread plays in the other legs. **Conviction count isn't the right gate; conviction value is.**
 
-**Fix:** In `register_bet()` validation block, if bet_type starts with `PICK_` or is `DAILY_DOUBLE`: count how many of the legs' races have at least one conviction candidate (via `protocol_check`). Reject if count < `MIN_HORIZONTAL_CONVICTION_LEGS`.
+**Fix applied:** `_horizontal_conviction_notes()` emits an informational `[horiz-conv note]` describing leg coverage. Two cases:
+- 0/N legs have conviction → "pure speculation?" prompt
+- 1..N-1 legs have conviction → simple "X/N legs have a conviction candidate" report
 
-Edge case: a horizontal where you SINGLE the favorite in one leg and have a conviction longshot in another might count as 2 conviction legs even though one is a chalk single. The protocol intent is "at least one STRONG opinion" — could refine the check to require at least one leg with `worst_case > 5` (STRONG) and one more with any positive worst case.
+Full coverage (all legs have a candidate) emits nothing — that's normal. The bettor judges whether the structure makes sense.
 
-**Severity:** MEDIUM
+**Verified:** P3 in R3 (1/3 conviction) → note lists which legs lack conviction (R4, R5), combo count (8), and prompt to verify the conviction leg's equity carries the spread. P3 in R4 (0/3) → note explicitly states "ticket is pure spread play, equity rests entirely on closing-odds value." P3 in R1 (2/3) → identifies R1 as the non-conviction leg.
+
+**Severity reclassified:** MEDIUM → FIXED (informational with leg-level detail).
 
 ### Dead code findings
 
@@ -1177,31 +1419,34 @@ When robinpc DB access is restored:
 
 1. **RKM-T1.1:** Query `rkm_track_offsets` distribution. Count distinct tracks per (horse_key, surface) in curves table.
 2. **RKM-T1.2:** Find duplicate horse names in `rkm_velocity_curves` and trace through joins.
-3. **RKM-T1.3:** Count starters with `n_recent_races = 1` in `rkm_current_form`. Should be substantial after Phase 3 recompute; near-zero confirms loop bound bug.
-4. **RKM-T1.4:** Pick a known horse with form changes; manually compute as-of-date career baseline vs stored value.
-5. **WA-T1.1:** Run grid search of k from 0.5 to 1.2 against actual finish frequencies.
-6. **WA-T1.2:** Re-fit payoff with year-stratified holdout. Compare to naive baseline.
-7. **WA-T1.3:** Re-fit payoff without post-race features. Compare R².
-8. **WA-T1.4:** Audit consumers of `trainer_ae_profiles` table.
-9. **WA-T1.5:** Inspect `jitter_calibration.json` patterns (already done — confirmed).
-10. **RDS-T1.1:** Test TEMPERATURE values at 200, 500, 1000, 6500ms on representative races. Calibrate against historical strike rates.
-11. **RDS-T1.2 to T1.5:** Code review only — already verified.
+3. **RKM-T1.3:** ✅ Code fix applied 2026-05-27 (loop bound now `range(1, ...)` matching `MIN_PRIOR_RACES = 1`). Pending recompute will materialize `n_recent_races = 1` snapshots for 2nd-start horses.
+4. **RKM-T1.4:** ✅ CONFIRMED 2026-05-27 by code review (`career_v0` is a static full-career lookup from `rkm_velocity_curves`, no date bound). No DB query needed.
+5. **WA-T1.1:** ✅ DONE 2026-05-27. Grid search via `calibrate_stern_k.py` on 81K clean races (using `official_position`): global MLE k = 0.86. Field-size segmentation flat (0.86/0.86/0.88). 0.81 is ~0.05 below MLE on a flat LL surface.
+6. **WA-T1.2:** ✅ DONE 2026-05-27. Verticals only. `verify_payoff_skill.py` shows pre-race full model adds +0.04 (exacta) / +0.07 (trifecta) R² above naive Stern — real skill, not just tautology. Severity dropped to MEDIUM.
+7. **WA-T1.3:** ✅ FULLY DONE 2026-05-27 across verticals + Pick 3/4/5/6. bad_fav_legs is predictively inert in all (≤0.001 ΔR²). Separate finding: existing Pick 5/6 OLS models lack a `log_carryover` feature (and Pick 6 actively excludes carryover rows). Carryover explains +0.31-0.33 R² above naive parlay — without it, the models can't capture pool dynamics that shape payoffs on carryover AND non-carryover days. Rebuild needed for both carryover-EV plays and structural-edge plays.
+8. **WA-T1.4:** ✅ DONE 2026-05-27. Static table contains future info (confirmed by Calhoun example, delta 0.046), but race-day-sim never reads it (`load_market_bias` uses point-in-time CTEs). Severity LOW; recommend dropping the table to remove the footgun.
+9. **WA-T1.5:** ✅ DONE 2026-05-27. Calibration is structurally broken AND unused. More importantly, jitter is a non-problem for blinded backtests — the blinder already provides closing odds for every leg, so there's no future-leg uncertainty to model. Recommend deleting the function, JSON, and compute script entirely; revisit only if live-betting mode is added later.
+10. **RDS-T1.1:** ✅ DONE 2026-05-27. T=6500ms confirmed catastrophically over-flat — produces ~15%/15%/.../10% probabilities on a 14-length-spread 8-horse field (ratio 1.5:1). Empirical time spreads (581 races) average 2,805 ms max-min, 972 ms stddev. Recommended T ≈ 1000ms; cascade effect through Benter explains why edge-vs-market is mostly noise. Likely a major ROI driver.
+11. **RDS-T1.2:** ✅ DONE 2026-05-27. Confirmed by code review; fix applied — `bias_multiplier(is_favorite=...)` gates off-turf credit to favorites only and raises lift to research-finding +7.5%.
+12. **RDS-T1.3:** ✅ DONE 2026-05-27. Confirmed and fixed — surface-specific class ladders (`_CLASS_RATINGS_MAIN/TURF`, +12 universal offset) replace the inconsistent `base += 5` fudge. Priors now align with `_get_anchor`'s anchor ratings on both surfaces.
+13. **RDS-T1.4:** ✅ DONE 2026-05-27. Confirmed and fixed — generic surface-switch multiplier now undone before trainer-specific is applied (mirrors class-drop pattern at lines 347-353). Verified with 4-case sanity test.
+14. **RDS-T1.5:** ✅ DONE 2026-05-27. Confirmed (with corrected direction — system was pessimistic, not optimistic, by ~36% on Pick 3 fair value) and fixed via `all_odds` API param + field overround normalization. Currently no live caller, but fix is preventive.
 
 ### Phase B: Apply Tier 1 fixes one at a time, verify each
 
 Order by likely impact and ease of fix:
 
-1. **RDS-T1.2** (off-turf favorite-only) — quick code fix, no DB recompute
-2. **RDS-T1.3** (turf prior offset) — quick code fix
-3. **RDS-T1.4** (surface-switch double-count) — quick code fix
-4. **RDS-T1.5** (parlay_prob normalization) — quick code fix
-5. **RDS-T1.1** (TEMPERATURE) — code fix + calibration verification
-6. **RKM-T1.3** (form loop bound) — code fix + recompute
+1. **RDS-T1.2** (off-turf favorite-only) — ✅ FIXED 2026-05-27
+2. **RDS-T1.3** (turf prior offset) — ✅ FIXED 2026-05-27
+3. **RDS-T1.4** (surface-switch double-count) — ✅ FIXED 2026-05-27
+4. **RDS-T1.5** (parlay_prob normalization) — ✅ FIXED 2026-05-27
+5. **RDS-T1.1** (TEMPERATURE) — ✅ verified 2026-05-27 as one of the highest-impact bugs. Pending: change TEMPERATURE from 6500 → 1000 in `probability.py:17, 28` as immediate fix; calibrate properly via MLE as follow-up
+6. **RKM-T1.3** (form loop bound) — ✅ code fix applied 2026-05-27 (Option B: `MIN_PRIOR_RACES = 1`); recompute pending
 7. **RKM-T1.4** (career baseline leakage) — significant rework + recompute
-8. **WA-T1.4** (trainer profiles point-in-time) — significant rework
-9. **WA-T1.3** (payoff post-race features) — re-fit
-10. **WA-T1.2** (payoff R² inflation) — re-fit with stratification
-11. **WA-T1.1** (Stern k calibration) — new calibration script
+8. **WA-T1.4** (trainer profiles point-in-time) — ✅ verified 2026-05-27; no live leakage (race-day-sim doesn't query the static table). Pending: drop the table to remove footgun + correct CLAUDE.md dependency list
+9. **WA-T1.3** (payoff post-race features) — ✅ FULLY DONE 2026-05-27 across all horizontals + verticals (post-race features predictively inert; ΔR² ≤ 0.001 everywhere). Distinct follow-up: rebuild Pick 5/6 OLS with carryover_amount as feature (current Pick 6 model excludes carryover rows entirely, making it useless for the actual play-decision use case)
+10. **WA-T1.2** (payoff R² inflation) — ✅ verticals done 2026-05-27 (real skill +0.04-0.07 above naive Stern); pending: switch fit_payoff_models.py to year-stratified split + report ΔR²
+11. **WA-T1.1** (Stern k calibration) — ✅ calibration done; constant 0.81 → 0.86 in `populate_stern_fair.py`; pending: re-run with `--recompute-all` (DB tunnel was dropped mid-refresh) to refresh `exotic_harville_ratios.stern_fair`
 12. **RKM-T1.1 + T1.2** (track normalization + identity joins) — major RKM rework
 
 After EACH fix:
@@ -1220,7 +1465,7 @@ After Tier 1 fixes are validated, address the cross-cutting issues (date ranges,
 - These findings came from agent-based analysis. Some may be incorrect interpretations of the code. Verify before fixing.
 - Many of the "HIGH severity" findings interact. Fixing them one at a time is the only way to know which contributed what.
 - The known `odds_to_rating` rank-mapping issue (in `edge-calibration-issue.md`) is separate from these findings but compounds with them.
-- Phase 3 RKM recompute (lower MIN_PRIOR_RACES) is still pending. Should be done AFTER fixing the loop-bound bug (RKM-T1.3) so the recompute actually picks up 2nd-start horses.
+- Phase 3 RKM recompute (lower `MIN_PRIOR_RACES` to 1) is still pending. Loop-bound fix (RKM-T1.3) was applied 2026-05-27, so the recompute will now actually pick up 2nd-start horses.
 
 ---
 

@@ -185,9 +185,10 @@ Fix all data leakage and structural issues in RKM before recomputing curves/form
 
 ### Required fixes (HIGH severity)
 
-1. **RKM-T1.3 — `compute_form.py` loop bound**
-   - Change `for i in range(2, len(race_obs))` to `for i in range(MIN_PRIOR_RACES, len(race_obs))`
-   - Effort: 5 minutes (already noted as critical to do BEFORE the recompute)
+1. **RKM-T1.3 — `compute_form.py` loop bound** ✅ CODE FIX APPLIED 2026-05-27
+   - Decision: Option B — honor `MIN_PRIOR_RACES = 1` so 2nd-start horses get a snapshot (single-prior-race basis; downstream can weight by `n_recent_races`).
+   - Loop at `compute_form.py:138` now `range(1, len(race_obs))` with comment tying it to `MIN_PRIOR_RACES` in `form.py`.
+   - Pending: full recompute of `rkm_current_form` to materialize 2nd-start snapshots. Must precede Phase 5 RKM pipeline run.
 
 2. **RKM-T1.4 — Career baseline leaks future data**
    - Refactor `compute_form_at_date` to use a TRAILING career baseline (only races before the snapshot date), not the full-career curve
@@ -202,16 +203,29 @@ Fix all data leakage and structural issues in RKM before recomputing curves/form
    - **DECIDE:** is this worth it? Without it, `adj_v0` isn't truly cross-track comparable. With it, every other RKM script needs updating.
 
 4. **RKM-T1.2 — Bare horse name joins ignore identity disambiguation**
-   - In `compute_adjustments.py:36` and `compute_situations.py:40`, join on canonical `horse_key` (with birth-year suffix) not bare name
+   - In `compute_adjustments.py:36`, `compute_situations.py:40`, `race-day-sim/blinder.py:47, 73`: join on canonical `horse_key` (with birth-year suffix) not bare name
    - May require modifying upstream tables to carry `horse_key` through, or using a more elaborate join condition
+   - **Hard prerequisite for RKM-T2.1 cross-zone fallback** — without it, fallback can attach wrong-horse data (verified on GP 2014-09-06: "Of Course" matched 3 horse_keys, inflating row counts)
    - Effort: 1-2 days
+
+5. **RKM-T2.1 — Sprint/route binary cutoff** (cross-zone fallback applied 2026-05-27 — but see RKM-T1.2 dependency)
+   - Stop-gap: cross-zone fallback in `blinder.py` with surface-specific shift and confidence haircut. Empirically calibrated on 117K paired starters.
+   - Constants: `CROSS_ZONE_R = {Dirt: 0.38, Synthetic: 0.51, Turf: 0.25}`, `SPRINT_TO_ROUTE_V0_SHIFT = {Dirt: -2.81, Synthetic: -3.33, Turf: -4.09}`, `SPRINT_TO_ROUTE_DECAY_SHIFT = {Dirt: -1.17, Synthetic: -1.21, Turf: -0.78}`.
+   - **Medium-term improvement:** finer zone partition (e.g., SHORT_SPRINT < 6f, MID_SPRINT 6-6.5f, TWEENER 7-7.5f, ROUTE ≥ 8f) — captures the 7f tweener problem and the within-zone gradient. Requires recomputing `rkm_velocity_curves` with new zone scheme.
+   - **Long-term:** continuous distance model — `(v0, decay)` as smooth functions of distance instead of binned.
+
+6. **RKM-T2.2 — `rkm_current_form` lacks surface/zone partition**
+   - Current schema is `(starter_id, race_id, current_v0, ...)` — one row per starter, no surface or distance_zone. A horse with mixed sprint/route or dirt/turf recent races has a single muddled snapshot.
+   - Fix: rebuild `compute_form.py` to emit one row per `(starter_id, surface, distance_zone)` and update consumers (blinder.py join, ratings.py lookup).
+   - Severity MEDIUM — affects accuracy of `current_v0`/`current_decay` for zone-switchers and surface-switchers.
+   - Effort: 2-3 days including form recompute.
 
 ### Optional fixes (MEDIUM severity)
 
-5. **RKM #6** — Reconcile velocity range filters (curves.py 30-70 vs form.py 30-85)
-6. **RKM #7** — Document v0 extrapolation conflation with stamina; consider a near-zero anchor
-7. **RKM #8** — Resolve `slope > 0.001` clamp inconsistency between curves.py and form.py
-8. **RKM #9** — Implement remaining outlier exclusion criteria from the spec (race time > 2× field mean, etc.)
+7. **RKM #6** — Reconcile velocity range filters (curves.py 30-70 vs form.py 30-85)
+8. **RKM #7** — Document v0 extrapolation conflation with stamina; consider a near-zero anchor
+9. **RKM #8** — Resolve `slope > 0.001` clamp inconsistency between curves.py and form.py
+10. **RKM #9** — Implement remaining outlier exclusion criteria from the spec (race time > 2× field mean, etc.)
 
 ### Verification
 
@@ -276,30 +290,46 @@ Fix Stern calibration, payoff model leakage, and trainer profile point-in-time i
 
 ### Required fixes (HIGH severity)
 
-1. **WA-T1.1 — Stern k calibration**
-   - Build a calibration script: grid-search k from 0.5 to 1.2, segmented by field size and surface. Validate against actual finish frequencies.
-   - Replace the hardcoded `STERN_K = 0.81` with the calibrated value (or table lookup if segmented)
-   - Effort: 2-3 days
-   - **DECIDE:** can defer if you accept k=0.81 with documented caveats.
+1. **WA-T1.1 — Stern k calibration** ✅ CALIBRATION DONE 2026-05-27
+   - Script `wagering-analytics/scripts/calibrate_stern_k.py` checked in. Run on 81K clean races (excluded coupled entries, DH/DQ in top-3 official, fields <5).
+   - **Result:** Global MLE k = 0.86 (using `official_position`; `finish_position` variant gave 0.88). Field-size segmentation does not earn its keep (5-7→0.86, 8-10→0.86, 11+→0.88).
+   - Code change applied: `STERN_K = 0.81` → `0.86` in `populate_stern_fair.py:29`.
+   - Pending: re-run `populate_stern_fair.py --recompute-all` to refresh `exotic_harville_ratios.stern_fair` with the corrected value (DB tunnel dropped mid-refresh — k=0.87 partial value sits in DB now).
+   - Caveat: calibration uses tote-implied win probabilities; the calibrated k inherits favorite-longshot bias from closing odds.
+   - **All wagering-analytics calibration scripts must use `official_position`, not `finish_position`** — exotic payoffs settle against the official order.
+   - Severity reclassified MEDIUM (bias from 0.81 vs 0.86 is small on a flat LL surface).
 
-2. **WA-T1.2 — Payoff model R² inflation**
-   - Refactor `fit_payoff_models.py` to use year-stratified train/test split (e.g., train on 1999-2014, test on 2015-2017)
-   - Add naive baseline (`log_payoff = -log(p1*p2*p3) + const`) for skill comparison
-   - Effort: 1 day
+2. **WA-T1.2 — Payoff model R² inflation** ✅ VERTICALS VERIFIED 2026-05-27
+   - Verification script: `wagering-analytics/scripts/verify_payoff_skill.py` (year-stratified, train<2016, test 2016-2017).
+   - Pre-race full model adds +0.041 R² (exacta) / +0.074 R² (trifecta) above naive Stern — **real learned skill**, not tautology.
+   - Pending: refactor `fit_payoff_models.py` to year-stratified split; report ΔR² above naive in `payoff_coefficients.json`. Note: 2018+ has only 429 races, use 2016-2017 as test window.
+   - Severity reclassified MEDIUM (audit's "mostly tautological" framing was wrong).
 
-3. **WA-T1.3 — Payoff model uses post-race features**
-   - Drop `bad_fav_legs`, `fav_won`, `fav_position`, etc. from feature set
-   - Re-fit with pre-race-only features
-   - Document the new (lower) R² as the actual forward-predictive number
-   - Effort: 1 day
+3. **WA-T1.3 — Payoff model uses post-race features** ✅ FULLY DISPROVEN 2026-05-27
+   - Verticals: fav_* features +0.001 R² (EXACTA, TRIFECTA).
+   - Pick 3/4: `verify_payoff_skill_horizontal.py`. bad_fav_legs ΔR² +0.0003 / +0.0004 — predictively inert.
+   - Pick 5/6: `verify_payoff_skill_pick56.py`. bad_fav_legs ΔR² +0.001 / -0.001 — predictively inert.
+   - **Bonus finding (Pick 3/4):** OLS barely beats naive parlay. Pick 3 +0.003 R²; Pick 4 +0.027 R². Could simplify to `expected_payoff = (1 - takeout) × Π(odds_i + 1)`.
+   - **CRITICAL finding (Pick 5/6):** Naive parlay is useless (Pick 5 R²=0.26, Pick 6 R²≈0). `log_carryover` is the single largest predictor (+0.31-0.33 R² above naive parlay). Existing `fit_payoff_models.py:183-184` ACTIVELY EXCLUDES carryover rows for Pick 6, throwing away the variation needed to learn pool dynamics. Pick 5 includes all rows but has no carryover feature, so can't distinguish carryover-vs-not.
+   - **Race-day-sim needs Pick 5/6 working in two distinct +EV cases:** (a) carryover days (effective takeout reduction); (b) structural-edge days where vulnerable-favorite plays or contrarian construction create payoff differential vs the public's chalk ticket. Both require a payoff model that understands pool dynamics — neither is served by the existing models.
+   - Pending fixes:
+     (a) drop fav_*/bad_fav_legs from feature sets across all bet types (cleanliness, no R² impact);
+     (b) **Pick 5/6 OLS rebuild: include all `pool_type = STANDARD` rows, add `log_carryover` as a feature, exclude only `pool_type = JACKPOT`**;
+     (c) optionally simplify Pick 3/4 to formulaic parlay × (1-takeout).
+   - Severity LOW for bad_fav_legs concern across all types. HIGH urgency for Pick 5/6 OLS rebuild — the existing models are unfit for either +EV use case.
 
-4. **WA-T1.4 — Trainer profiles aggregate, not point-in-time**
-   - Either: (a) build a materialized view computed point-in-time per starter (heavy storage), OR (b) ensure all consumers compute trainer A/E at simulation time via point-in-time CTEs (current `load_market_bias` does this; just don't use the static `trainer_ae_profiles` table for live decisions)
-   - Recommendation: option (b). The static table stays for research; race-day-sim uses load_market_bias's CTEs
-   - Effort: 1-2 days (mostly documentation and removing the import path)
+4. **WA-T1.4 — Trainer profiles aggregate, not point-in-time** ✅ VERIFIED 2026-05-27
+   - Structural future-leakage confirmed in `trainer_ae_profiles` (Calhoun: full-career A/E 0.870 vs as-of-2010 A/E 0.916, delta 0.046).
+   - **No live leakage in race-day-sim:** the static table is never queried by any code path. `blinder.py:load_market_bias` uses point-in-time CTEs (date < race_date) for all 5 dimensions — already correct.
+   - Pending: (a) drop the static `trainer_ae_profiles` table (one-line fix, eliminates footgun); (b) update race-day-sim CLAUDE.md which incorrectly lists `trainer_ae_profiles` as a dependency (it isn't — `load_market_bias` computes everything fresh).
+   - Effort: 30 minutes.
 
-5. **WA-T1.5 — Jitter calibration measures wrong quantity**
-   - Document as known limitation. Race-day-sim should not use jitter values for horizontal pool projection until methodology is fixed.
+5. **WA-T1.5 — Jitter calibration measures wrong quantity** ✅ VERIFIED 2026-05-27
+   - Confirmed broken (measures inter-sequence winner odds spread, not within-race drift). σ≈1.0 across all legs is √2 × within-leg log-odds spread, not jitter.
+   - Confirmed unused: `horizontal.py:29` defines `get_leg_sigma` but no code calls it; `estimate_horizontal_value` uses leg odds directly.
+   - **Architectural insight:** jitter is a non-problem for blinded backtests. The blinder loads closing odds for every leg before bets are constructed, so there's no future-leg uncertainty to model. Jitter only matters for live betting (not on roadmap).
+   - Pending: delete `get_leg_sigma` from `horizontal.py`, delete `models/jitter_calibration.json`, delete `wagering-analytics/scripts/compute_jitter_calibration.py`. Revisit only if live-betting mode is added.
+   - Effort: 15 minutes.
    - Real fix requires intra-race odds time series (not in the database). Defer.
    - Effort: 1 hour to add a deprecation warning
 
@@ -367,32 +397,41 @@ Fix the rating computation, ticket construction, and protocol enforcement issues
 
 ### Required fixes (HIGH severity)
 
-1. **RDS-T1.1 — TEMPERATURE = 6500ms produces nearly-uniform probabilities**
-   - Calibrate properly using the freshly-recomputed RKM data
-   - Likely target: 200-500ms range
-   - Effort: 1 day (calibration + verification)
+1. **RDS-T1.1 — TEMPERATURE = 6500ms produces nearly-uniform probabilities** ✅ VERIFIED 2026-05-27
+   - Empirical within-race predicted-time spreads (581 sample races): mean max-min = 2,805 ms (~14 lengths), stddev = 972 ms.
+   - At T=6500, an 8-horse field with 14-length spread produces probabilities of ~15%/14%/.../10% (fastest:slowest ratio 1.5:1) — nearly uniform.
+   - Cascade through Benter: model term contributes ~zero log-difference, so combined output ≈ market echo. Likely a major contributor to -42% ROI.
+   - Immediate fix: change `TEMPERATURE = 6500.0` → `TEMPERATURE = 1000.0` in `probability.py:17`. With T=1000, same 14-length-spread field produces 34%/23%/15%/.../2% — realistic dispersion.
+   - Follow-up: fit T jointly with Benter α via MLE on historical race outcomes for a properly calibrated value.
+   - Effort: 5 minutes for the constant change; ~1 day for proper MLE calibration.
 
 2. **`odds_to_rating` rank-mapping issue (edge-calibration-issue.md)**
    - Refactor edge computation to use probability space directly
    - Display edge as % overlay alongside rating points
    - Effort: 1-2 days
 
-3. **RDS-T1.2 — Off-turf credit applied to entire field**
-   - Constrain the +5% multiplier to favorite only
-   - Add a separate negative multiplier for turf-only horses on dirt
-   - Effort: 2 hours
+3. **RDS-T1.2 — Off-turf credit applied to entire field** ✅ FIXED 2026-05-27
+   - `bias_multiplier(is_favorite=...)` parameter added; off-turf credit gated to favorite only.
+   - Lift raised from 1.050 → 1.075 to match research finding 9 (+7.5% favorite lift).
+   - `format_race_ratings` identifies favorite by lowest closing_odds and passes flag through.
+   - Pending follow-up: "fade turf-only horses underneath" — needs each horse's recent surface history; separate signal access path required.
 
-4. **RDS-T1.3 — Turf rating prior double-counts surface offset**
-   - Remove the +5 offset in compute_prior_rating; align with canonical anchor
-   - Effort: 1 hour
+4. **RDS-T1.3 — Turf rating prior double-counts surface offset** ✅ FIXED 2026-05-27
+   - Replaced single class-rating dict with `_CLASS_RATINGS_MAIN` (Dirt + Synthetic, anchor 100) and `_CLASS_RATINGS_TURF` (main + 12 universal-scale offset, anchor 112).
+   - Naming reflects `_CANONICAL_PARAMS` grouping — Dirt and Synthetic both anchor at 100, only Turf elevates.
+   - Removed `base += 5` fudge from `compute_prior_rating`. Priors now anchor correctly: 100 (dirt/synthetic) / 112 (turf), matching `_get_anchor` on each surface.
+   - Verified: synthetic $25K CLM prior = 105, turf $25K CLM = 117 (= 105 + 12); synthetic ALW = 114, turf ALW = 126.
+   - This was affecting every turf rating, not just prior-only horses (`format_race_ratings` blends `w × physics + (1-w) × prior`).
+   - **Note on uniform +12:** The offset is uniform across distances because the canonical anchor table calibrates turf at 112 across all fitted distances (5f-9f). If turf class structure ever turns out to vary by distance (e.g., 5f turf is less elevated than 9f turf), the right place to express that is in `_CANONICAL_PARAMS` (per-distance anchor rating), not in the prior ladder. The prior follows the anchor automatically via the offset constant.
 
-5. **RDS-T1.4 — Surface-switch trainer A/E double-counts**
-   - Mirror the class-drop logic that undoes the generic before applying trainer-specific
-   - Effort: 2 hours
+5. **RDS-T1.4 — Surface-switch trainer A/E double-counts** ✅ FIXED 2026-05-27
+   - Captured generic surface-switch multiplier in `surface_switch_mult` local; trainer-specific block now divides by it before multiplying by `trainer_switch_ae / BASELINE_AE`. Mirrors class-drop pattern.
+   - Verified with 4 sanity cases including the double-count case (trainer matching population average): now 1.075 instead of 1.156.
 
-6. **RDS-T1.5 — Horizontal parlay_prob unnormalized for takeout**
-   - Normalize by full-field overround
-   - Effort: 2 hours
+6. **RDS-T1.5 — Horizontal parlay_prob unnormalized for overround** ✅ FIXED 2026-05-27
+   - Added `all_odds` API param to leg dict; `estimate_horizontal_value` now normalizes by field overround when supplied (falls back to biased raw sum with warning if not).
+   - Direction correction vs audit: raw `1/(odds+1)` sums to ~1.17 with 17% takeout (over-estimates each horse's true prob), so unnormalized parlay_prob was over-estimated and fair_payoff was UNDER-estimated. System was too pessimistic by ~36% on Pick 3, not too optimistic.
+   - Currently unused by `simulate_race_day.py`, so no immediate behavioral change — fix is preventive for when ticket-construction logic is wired in.
 
 7. **PROTO-T3.1 — `register_bet()` performs zero validation**
    - Add validation: programs in race, structural validity, bet type whitelist, pool minimums, win-bet odds floor
@@ -401,7 +440,9 @@ Fix the rating computation, ticket construction, and protocol enforcement issues
 
 ### Optional fixes (MEDIUM severity)
 
-8. **PROTO-T3.2 to T3.13** — Equity test gating, press mechanic, opinion classification, etc. See audit doc Tier 3.
+8. **PROTO-T3.2 — Equity test gating** ✅ FIXED 2026-05-28 (soft warnings in `register_bet`).
+9. **PROTO-T3.3 — Horizontal equity formula** ✅ AUDIT-DISPROVEN 2026-05-28. Formula was numerically correct; docstring tightened.
+10. **PROTO-T3.4 to T3.13** — Press mechanic, opinion classification, FTS rule alignment, place-bet block (already enforced via `_FORBIDDEN_BET_TYPES`), pool minimum thresholds, horizontal qualification check, etc. See audit doc Tier 3.
 9. **RDS H1** — Exotic payoff dilution math
 10. **RDS H5** — `kelly_exotic` formula
 11. **Cross-module edge naming consistency**

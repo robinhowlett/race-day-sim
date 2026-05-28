@@ -121,6 +121,23 @@ Increase basket volume as confidence grows. "The volume of the basket compensate
 Some horses are "win-only" — they either win or are no good. Don't use them underneath in exotics. "Once I say he doesn't win, your love kind of wanes."
 
 ### First-Time Starters
+
+**Note (2026-05-28):** This rule is the original ITP guidance. It has been
+**superseded** by research findings — see `wagering-framework.md` §"Maiden
+Races and First-Time Starters". The operational rule used by `ratings.py`
+and the simulation protocol is:
+
+- Generic FTS as a group are overbet (A/E = 0.776) — fading is correct.
+- Elite-FTS-trainer horses (≥10 prior FTS, A/E ≥ 1.0) are an exception:
+  legitimate inclusion underneath at 8/1+ value.
+- Maiden favorites are the most reliable contender (A/E = 0.837).
+- Don't spread to random longshots in maiden races.
+
+`itp-principles.md` is a historical reference for ITP source material, not
+the operational protocol. Where they conflict, `wagering-framework.md` wins.
+
+Original ITP guidance (historical):
+
 - Use on TOP only (a few dollars in case you're wrong about something you know nothing about)
 - NEVER use underneath — you have no evidence they'll fill place/show
 
