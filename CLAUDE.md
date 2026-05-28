@@ -107,6 +107,6 @@ In `probability.py` and `kelly.py`:
 - `ALPHA = 1.89` (Benter model weight — from rkm Phase 4 logit fit)
 - `BETA = 1.0` (odds weight)
 - `STERN_K = 0.81` (empirically calibrated from wagering-analytics AN1)
-- `TEMPERATURE = 6500.0` (softmax temperature in ms)
+- `TEMPERATURE = 1000.0` (softmax temperature in ms; was 6500 — too flat, fixed 2026-05-27 via RDS-T1.1)
 - `KELLY_FRACTION = 0.25` (quarter-Kelly)
 - `MAX_EXPOSURE = 0.05` (5% of bankroll per race)

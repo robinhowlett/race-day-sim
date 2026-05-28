@@ -43,7 +43,6 @@ _CANONICAL_PARAMS = {
 }
 
 MS_PER_POINT = {"sprint": 58.0, "route": 77.0}
-TEMPERATURE = 6500.0
 
 
 def _get_anchor(surface: str, furlongs: float) -> tuple[float, float]:
@@ -91,9 +90,14 @@ def _get_anchor(surface: str, furlongs: float) -> tuple[float, float]:
 # Relative A/E baselines (population A/E ≈ 0.80 for dirt/fast)
 BASELINE_AE = 0.800
 
-# Class-level implied ratings (from research Item 1 class ladder)
-# Maps race type to approximate expected winner rating
-_CLASS_RATINGS = {
+# Class-level implied ratings on the universal scale.
+# "Main" surfaces (Dirt, Synthetic): anchor 100 = CLM $5K-$10K — from research
+#   Item 1 class ladder. The canonical anchor table treats dirt and synthetic
+#   as the same scale; bottom-tier claiming infrastructure mirrors.
+# Turf: anchor 112 = CLM $10K-$25K. Offset +12 to match _get_anchor's turf
+#   canonical rating. The original `base += 5` fudge double-counted vs the
+#   physics anchor and misaligned priors with compute_rating() for turf horses.
+_CLASS_RATINGS_MAIN = {
     "MAIDEN CLAIMING": 84,
     "MAIDEN SPECIAL WEIGHT": 92,
     "CLAIMING": 100,  # generic — refined by purse below
@@ -102,6 +106,8 @@ _CLASS_RATINGS = {
     "ALLOWANCE OPTIONAL CLAIMING": 118,
     "STAKES": 130,
 }
+_TURF_CLASS_OFFSET = 12  # universal-scale offset for turf races
+_CLASS_RATINGS_TURF = {k: v + _TURF_CLASS_OFFSET for k, v in _CLASS_RATINGS_MAIN.items()}
 
 
 def compute_prior_rating(race_type: str, purse: float, surface: str,
@@ -114,10 +120,16 @@ def compute_prior_rating(race_type: str, purse: float, surface: str,
     The prior represents: "what rating would a typical CONTENDER in this race have?"
     Not the winner — the mid-field horse who belongs at this level.
     """
-    # Base from race type
-    base = _CLASS_RATINGS.get(race_type, 100)
+    # Base from race type — surface-specific ladder. Turf is +12 from main
+    # (dirt/synthetic) to match _get_anchor's universal-scale anchor of 112
+    # for turf vs 100 for dirt and synthetic.
+    is_turf = (surface == "Turf")
+    ladder = _CLASS_RATINGS_TURF if is_turf else _CLASS_RATINGS_MAIN
+    base = ladder.get(race_type, 100 + (_TURF_CLASS_OFFSET if is_turf else 0))
 
-    # Refine claiming races by purse (rough proxy for claiming price tier)
+    # Refine claiming races by purse (rough proxy for claiming price tier).
+    # Dirt anchor is 100 = $5-10K CLM; turf anchor is 112 = $10-25K CLM.
+    # Same purse-tier shape, shifted by _TURF_CLASS_OFFSET on turf.
     if "CLAIMING" in (race_type or "") and "MAIDEN" not in (race_type or ""):
         if purse and purse > 0:
             if purse <= 8000:
@@ -130,10 +142,8 @@ def compute_prior_rating(race_type: str, purse: float, surface: str,
                 base = 112
             else:
                 base = 118
-
-    # Turf offset (turf races are generally higher class)
-    if surface == "Turf":
-        base += 5
+            if is_turf:
+                base += _TURF_CLASS_OFFSET
 
     # Bias adjustment (trainer/jockey signals shift the prior)
     if bias_mult != 1.0 and bias_mult > 0:
@@ -221,7 +231,7 @@ def odds_to_rating(odds: float, field_odds: list[float], zone: str = "route",
         return 100.0
 
 
-def bias_multiplier(bias_df: pd.Series) -> float:
+def bias_multiplier(bias_df: pd.Series, is_favorite: bool = False) -> float:
     """Compute multiplicative bias factor from a starter's market bias row.
 
     Each applicable factor contributes its relative A/E (factor_ae / baseline).
@@ -230,6 +240,9 @@ def bias_multiplier(bias_df: pd.Series) -> float:
 
     Args:
         bias_df: a single row from load_market_bias() result
+        is_favorite: whether this starter is the post-time favorite. Some
+            biases (e.g., off-turf credit) only apply to the favorite per
+            research-findings.md.
 
     Returns:
         Multiplier to apply to model probability (1.0 = no bias, >1 = underbet, <1 = overbet)
@@ -264,9 +277,13 @@ def bias_multiplier(bias_df: pd.Series) -> float:
     if _flag("first_time_blinkers"):
         multiplier *= 0.970
 
-    # Off-turf + short-priced (favorite context handled by caller)
-    if _flag("off_turf"):
-        multiplier *= 1.050
+    # Off-turf credit applies ONLY to the favorite (research finding 9:
+    # off-turf favorite A/E = 0.884, ~+7.5% lift vs baseline). Applying it
+    # to the whole field inverts the conclusion. The complementary "fade
+    # turf-only horses underneath" is a separate signal still TODO — needs
+    # access to each horse's recent surface history.
+    if _flag("off_turf") and is_favorite:
+        multiplier *= 1.075
 
     # Jockey upgrade/downgrade
     switch = _val("jockey_switch_type", "SAME")
@@ -280,16 +297,21 @@ def bias_multiplier(bias_df: pd.Series) -> float:
     if allowance == 5:
         multiplier *= 1.031
 
-    # Surface switch
+    # Surface switch — population-average multiplier by direction.
+    # The trainer-specific block below may override this with the trainer's
+    # own surface-switch A/E (which already incorporates the population
+    # effect), so we track the value applied and undo it before substituting.
+    surface_switch_mult = 1.0
     if _flag("surface_switch"):
         prev = _val("prev_surface", "")
         curr = _val("surface", "")
         if prev == "Synthetic" and curr == "Turf":
-            multiplier *= 1.075
+            surface_switch_mult = 1.075
         elif prev == "Synthetic" and curr == "Dirt":
-            multiplier *= 1.036
+            surface_switch_mult = 1.036
         elif prev == "Turf" and curr == "Dirt":
-            multiplier *= 0.969
+            surface_switch_mult = 0.969
+        multiplier *= surface_switch_mult
 
     # Class drop
     if _val("class_move") == "DROP":
@@ -321,10 +343,14 @@ def bias_multiplier(bias_df: pd.Series) -> float:
         if trainer_layoff_ae and (_val("trainer_layoff_starts", 0) or 0) >= 10:
             multiplier *= float(trainer_layoff_ae) / BASELINE_AE
 
-    # Trainer surface switch (only if switching surface AND trainer has record)
+    # Trainer surface switch — overrides the generic (the trainer's A/E
+    # already incorporates the population effect, so applying both
+    # double-counts; mirror the class-drop pattern below).
     if _flag("surface_switch"):
         trainer_switch_ae = _val("trainer_switch_ae")
         if trainer_switch_ae and (_val("trainer_switch_starts", 0) or 0) >= 10:
+            if surface_switch_mult != 1.0:
+                multiplier /= surface_switch_mult  # undo generic
             multiplier *= float(trainer_switch_ae) / BASELINE_AE
 
     # Trainer class drop (only if dropping AND trainer has record)
@@ -420,10 +446,13 @@ def format_race_ratings(card: pd.DataFrame, bias_df: pd.DataFrame,
             # but at least the horse has SOME history in this zone
             w = 1.0 - np.exp(-curve_races / 8.0)  # slower ramp (career is noisier)
             w *= 0.7  # discount for using career instead of current form
+            # Cross-zone fallback haircut: blinder fills adj_v0 from the
+            # opposite-zone curve when primary is missing, applying a
+            # surface-specific v0/decay shift. Reduce w by the empirical
+            # cross-zone correlation when fallback was used.
+            haircut = float(starter.get("physics_confidence_haircut") or 1.0)
+            w *= haircut
         else:
-            # Phase 4 TODO: check for cross-zone data (e.g., sprint curve for a route race)
-            # If available, use at w = same_zone_w × CROSS_ZONE_CORRELATION (0.34 for routes)
-            # Requires blinder.py to also load the alternate-zone curve.
             v0 = None
             decay = None
             w = 0.0
@@ -441,6 +470,14 @@ def format_race_ratings(card: pd.DataFrame, bias_df: pd.DataFrame,
     race_type = str(race["race_type"].iloc[0]) if "race_type" in race.columns else "CLAIMING"
     race_purse = float(race["purse"].iloc[0]) if "purse" in race.columns and pd.notna(race["purse"].iloc[0]) else 0
 
+    # Identify the post-time favorite (lowest closing odds) — used for
+    # favorite-only bias adjustments (e.g., off-turf credit).
+    fav_starter_id = None
+    if "closing_odds" in race.columns:
+        fav_row = race.loc[race["closing_odds"].idxmin()] if race["closing_odds"].notna().any() else None
+        if fav_row is not None:
+            fav_starter_id = fav_row["starter_id"]
+
     rows = []
     for i, (_, starter) in enumerate(race.iterrows()):
         sid = starter["starter_id"]
@@ -454,7 +491,8 @@ def format_race_ratings(card: pd.DataFrame, bias_df: pd.DataFrame,
             if not match.empty:
                 bias_row = match.iloc[0].to_dict()
 
-        mult = bias_multiplier(bias_row) if bias_row is not None else 1.0
+        is_fav = (fav_starter_id is not None and sid == fav_starter_id)
+        mult = bias_multiplier(bias_row, is_favorite=is_fav) if bias_row is not None else 1.0
 
         # Compute blended rating: w × physics + (1-w) × prior
         prior = compute_prior_rating(race_type, race_purse, surface, mult)

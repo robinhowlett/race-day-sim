@@ -14,8 +14,15 @@ def benter_combine(model_probs: np.ndarray, odds_probs: np.ndarray,
 
 
 def model_probs_from_curves(adj_v0s: list[float], decay_rates: list[float],
-                            race_distance_ft: float, temperature: float = 6500.0) -> np.ndarray:
-    """Compute model win probabilities from velocity curves via predicted finishing times."""
+                            race_distance_ft: float, temperature: float = 1000.0) -> np.ndarray:
+    """Compute model win probabilities from velocity curves via predicted finishing times.
+
+    temperature (ms) controls softmax sharpness over predicted finishing times.
+    1000ms is a defensible default given empirical within-race time spreads
+    (mean stddev ~972 ms across 581 sample 2014 races). Lower T = sharper
+    favorite, higher T = flatter probabilities. Joint MLE calibration with
+    Benter alpha is a follow-up (see RDS-T1.1 audit).
+    """
     predicted_times = []
     for v0, decay in zip(adj_v0s, decay_rates):
         avg_v = v0 - decay * (race_distance_ft / 2000.0)

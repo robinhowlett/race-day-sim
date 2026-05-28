@@ -3,7 +3,20 @@
 Enforces the information firewall: Claude never sees results before committing bets.
 """
 
+import numpy as np
 import pandas as pd
+
+# Empirical cross-zone correlation between sprint and route curves on the same
+# surface — measured on 117K paired starters in rkm_velocity_curves (1991-2017).
+# Used as a confidence haircut for cross-zone fallback (when primary-zone
+# curve is missing but opposite-zone exists).
+CROSS_ZONE_R = {"Dirt": 0.38, "Synthetic": 0.51, "Turf": 0.25}
+
+# Average shifts when going sprint → route on the same surface. Apply with sign:
+# sprint→route adds the (negative) shift; route→sprint subtracts it.
+# Source: same 117K paired observations as CROSS_ZONE_R.
+SPRINT_TO_ROUTE_V0_SHIFT    = {"Dirt": -2.81, "Synthetic": -3.33, "Turf": -4.09}
+SPRINT_TO_ROUTE_DECAY_SHIFT = {"Dirt": -1.17, "Synthetic": -1.21, "Turf": -0.78}
 
 PRE_RACE_CARD_SQL = """
 SELECT
@@ -40,7 +53,15 @@ SELECT
     cf.career_decay,
     cf.v0_trend,
     cf.n_recent_races,
-    cf.days_since_last
+    cf.days_since_last,
+    -- Cross-zone fallback curve: opposite zone, same surface. Used when
+    -- the primary-zone curve is missing. Post-processing in Python applies
+    -- a surface-specific v0/decay shift and confidence haircut (RKM
+    -- distance-zone discontinuity workaround — see ratings._cross_zone fns).
+    vc_alt.adj_v0   AS alt_zone_adj_v0,
+    vc_alt.adj_decay AS alt_zone_adj_decay,
+    vc_alt.distance_zone AS alt_zone,
+    vc_alt.n_races  AS alt_zone_curve_races
 FROM handycapper.races r
 JOIN handycapper.starters s ON s.race_id = r.id
 LEFT JOIN handycapper.rkm_velocity_curves vc
@@ -48,6 +69,11 @@ LEFT JOIN handycapper.rkm_velocity_curves vc
     AND vc.surface = r.surface
     AND vc.distance_zone = CASE WHEN r.furlongs > 6.5 THEN 'route' ELSE 'sprint' END
     AND vc.first_race < %(race_date)s
+LEFT JOIN handycapper.rkm_velocity_curves vc_alt
+    ON SPLIT_PART(vc_alt.horse_key, '|', 1) = s.horse
+    AND vc_alt.surface = r.surface
+    AND vc_alt.distance_zone = CASE WHEN r.furlongs > 6.5 THEN 'sprint' ELSE 'route' END
+    AND vc_alt.first_race < %(race_date)s
 LEFT JOIN handycapper.rkm_current_form cf
     ON cf.starter_id = s.id
 WHERE r.track = %(track)s
@@ -98,6 +124,12 @@ SELECT
     NULL::numeric  AS adj_decay,
     NULL::int      AS curve_races,
     NULL::int      AS n_observations,
+    NULL::date     AS curve_first_race,
+    NULL::date     AS curve_last_race,
+    NULL::numeric  AS alt_zone_adj_v0,
+    NULL::numeric  AS alt_zone_adj_decay,
+    NULL::text     AS alt_zone,
+    NULL::int      AS alt_zone_curve_races,
     NULL::numeric  AS current_v0,
     NULL::numeric  AS current_decay,
     NULL::numeric  AS career_v0,
@@ -111,6 +143,59 @@ WHERE r.track = %(track)s
   AND r.date = %(race_date)s
 ORDER BY r.number, s.choice
 """
+
+
+def _apply_cross_zone_fallback(df: pd.DataFrame) -> pd.DataFrame:
+    """Fill missing primary-zone curves from the opposite-zone curve.
+
+    For starters whose adj_v0/adj_decay are NULL but alt_zone_adj_v0 exists,
+    use the opposite-zone values shifted by the surface-specific empirical
+    sprint↔route gap. Adds a column `physics_confidence_haircut` (1.0 = no
+    haircut; <1.0 = cross-zone fallback was used) so downstream rating logic
+    can reduce w_physics accordingly.
+    """
+    if "alt_zone_adj_v0" not in df.columns:
+        df["physics_confidence_haircut"] = 1.0
+        return df
+
+    # Identify rows that need the fallback: primary curve missing, alt exists
+    needs_fallback = df["adj_v0"].isna() & df["alt_zone_adj_v0"].notna()
+    df["physics_confidence_haircut"] = 1.0
+
+    if not needs_fallback.any():
+        return df
+
+    primary_zone = np.where(df["furlongs"] > 6.5, "route", "sprint")
+    for idx in df.index[needs_fallback]:
+        surface = df.at[idx, "surface"]
+        r = CROSS_ZONE_R.get(surface)
+        v0_shift = SPRINT_TO_ROUTE_V0_SHIFT.get(surface)
+        decay_shift = SPRINT_TO_ROUTE_DECAY_SHIFT.get(surface)
+        if r is None or v0_shift is None or decay_shift is None:
+            continue  # unknown surface; leave as missing
+
+        alt_v0 = float(df.at[idx, "alt_zone_adj_v0"])
+        alt_decay = float(df.at[idx, "alt_zone_adj_decay"])
+
+        # Direction: if needed zone is route and we have sprint, shift sprint
+        # → route by adding the negative gap. If needed zone is sprint and we
+        # have route, subtract (move route values up to sprint level).
+        if primary_zone[df.index.get_loc(idx)] == "route":
+            adj_v0 = alt_v0 + v0_shift
+            adj_decay = alt_decay + decay_shift
+        else:
+            adj_v0 = alt_v0 - v0_shift
+            adj_decay = alt_decay - decay_shift
+
+        df.at[idx, "adj_v0"] = adj_v0
+        df.at[idx, "adj_decay"] = adj_decay
+        df.at[idx, "physics_confidence_haircut"] = r
+        # Carry curve_races count from alt zone so w_physics has something
+        # to work with — caller will multiply w by haircut.
+        if pd.isna(df.at[idx, "curve_races"]) and "alt_zone_curve_races" in df.columns:
+            df.at[idx, "curve_races"] = df.at[idx, "alt_zone_curve_races"]
+
+    return df
 
 
 def load_pre_race_card(conn, track: str, race_date: str) -> pd.DataFrame:
@@ -127,9 +212,12 @@ def load_pre_race_card(conn, track: str, race_date: str) -> pd.DataFrame:
         df = pd.read_sql(PRE_RACE_CARD_SQL_NO_RKM, conn, params={"track": track, "race_date": race_date})
 
     for col in ["closing_odds", "furlongs", "v0", "decay_rate", "adj_v0", "adj_decay",
+                "alt_zone_adj_v0", "alt_zone_adj_decay",
                 "current_v0", "current_decay", "career_v0", "career_decay", "v0_trend"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df = _apply_cross_zone_fallback(df)
     return df
 
 
@@ -436,7 +524,14 @@ def load_market_bias(conn, track: str, race_date: str) -> pd.DataFrame:
 
 
 def load_race_results(conn, track: str, race_date: str) -> pd.DataFrame:
-    """Load actual results for post-race reveal. Only call AFTER bets are committed."""
+    """Load actual results for post-race reveal. Only call AFTER bets are committed.
+
+    Returns one row per starter with finish data plus per-starter WPS payoffs
+    and per-race vertical-exotic payoffs. All payoffs are normalized to per-$1
+    (raw `payoff / unit`) so callers can multiply by stake without worrying
+    about the chart's base unit. Horizontal exotic payoffs (DD/Pick N) are
+    not in this DataFrame — load via the exotics table separately.
+    """
     sql = """
     SELECT
         r.id AS race_id, r.number AS race_number,
@@ -447,14 +542,35 @@ def load_race_results(conn, track: str, race_date: str) -> pd.DataFrame:
         s.disqualified,
         s.position_dead_heat,
         s.odds, s.choice, s.winner,
+        -- WPS payoffs from the wps table (per-starter, base unit usually $2)
+        w_win.payoff  AS win_payoff_raw,
+        w_win.unit    AS win_unit,
+        w_plc.payoff  AS place_payoff_raw,
+        w_plc.unit    AS place_unit,
+        w_shw.payoff  AS show_payoff_raw,
+        w_shw.unit    AS show_unit,
+        -- Vertical exotic payoffs normalized to per-$1
         e_ex.payoff / NULLIF(e_ex.unit, 0) AS exacta_payoff,
+        e_qn.payoff / NULLIF(e_qn.unit, 0) AS quinella_payoff,
         e_tri.payoff / NULLIF(e_tri.unit, 0) AS trifecta_payoff,
-        e_sup.payoff / NULLIF(e_sup.unit, 0) AS super_payoff
+        e_sup.payoff / NULLIF(e_sup.unit, 0) AS super_payoff,
+        e_hi5.payoff / NULLIF(e_hi5.unit, 0) AS hi5_payoff,
+        -- Base units (so caller can show "$2 WPS / $1 Exacta / $0.50 Tri" provenance)
+        e_ex.unit  AS exacta_unit,
+        e_qn.unit  AS quinella_unit,
+        e_tri.unit AS trifecta_unit,
+        e_sup.unit AS super_unit,
+        e_hi5.unit AS hi5_unit
     FROM handycapper.races r
     JOIN handycapper.starters s ON s.race_id = r.id
-    LEFT JOIN handycapper.exotics e_ex ON e_ex.race_id = r.id AND e_ex.bet_type = 'EXACTA' AND e_ex.payoff > 0
-    LEFT JOIN handycapper.exotics e_tri ON e_tri.race_id = r.id AND e_tri.bet_type = 'TRIFECTA' AND e_tri.payoff > 0
+    LEFT JOIN handycapper.wps w_win ON w_win.starter_id = s.id AND w_win.type = 'Win'   AND w_win.payoff > 0
+    LEFT JOIN handycapper.wps w_plc ON w_plc.starter_id = s.id AND w_plc.type = 'Place' AND w_plc.payoff > 0
+    LEFT JOIN handycapper.wps w_shw ON w_shw.starter_id = s.id AND w_shw.type = 'Show'  AND w_shw.payoff > 0
+    LEFT JOIN handycapper.exotics e_ex  ON e_ex.race_id = r.id  AND e_ex.bet_type  = 'EXACTA'     AND e_ex.payoff > 0
+    LEFT JOIN handycapper.exotics e_qn  ON e_qn.race_id = r.id  AND e_qn.bet_type  = 'QUINELLA'   AND e_qn.payoff > 0
+    LEFT JOIN handycapper.exotics e_tri ON e_tri.race_id = r.id AND e_tri.bet_type = 'TRIFECTA'   AND e_tri.payoff > 0
     LEFT JOIN handycapper.exotics e_sup ON e_sup.race_id = r.id AND e_sup.bet_type = 'SUPERFECTA' AND e_sup.payoff > 0
+    LEFT JOIN handycapper.exotics e_hi5 ON e_hi5.race_id = r.id AND e_hi5.bet_type = 'HI_5'       AND e_hi5.payoff > 0
     WHERE r.track = %(track)s AND r.date = %(race_date)s
     ORDER BY r.number, s.official_position
     """
