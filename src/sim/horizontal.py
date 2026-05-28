@@ -39,19 +39,32 @@ def get_leg_sigma(leg_position: int) -> float:
 def estimate_leg_equity(
     horse_odds: float,
     n_horses_used: int,
-    ticket_cost_per_combo: float,
+    ticket_cost_per_combo: float = 1.0,
 ) -> float:
-    """Estimate equity change if this horse wins a given leg.
+    """Equity ratio for one horse winning their leg in a horizontal ticket.
 
-    Returns the equity ratio: >1.0 = gained equity, <1.0 = lost equity.
+    Returns >1.0 = gained equity, <1.0 = lost equity. The unused
+    ticket_cost_per_combo argument is retained for API compatibility; the
+    ratio is dimensionless.
 
-    The calculation: if you're N-deep in this leg, you're effectively
-    betting (ticket_cost / N) to win on each horse. If a horse at `odds`
-    wins, you get back (odds + 1) × your per-horse stake.
+    Formula (equivalent to simulation-protocol.md Step E.4):
 
-    equity_ratio = (odds + 1) / n_horses_used
-    - If 4-deep and 2/1 wins: (3) / 4 = 0.75 → LOST equity
-    - If 4-deep and 4/1 wins: (5) / 4 = 1.25 → GAINED equity
+        ratio = (odds + 1) × surviving_combos / total_combos
+
+    For one leg in a horizontal ticket where this leg has `n_horses_used`
+    selections and the rest of the legs are unconstrained, the ratio
+    `surviving_combos / total_combos` equals `1 / n_horses_used`. So:
+
+        ratio = (odds + 1) / n_horses_used
+
+    This collapses the spec example:
+      $120 Pick 3, 3×2×2=12 combos, leg 1 width 3, horse at 3/1:
+        spec:   (3+1) × 4 / 12 = 1.33
+        impl:   (3+1) / 3       = 1.33
+
+    Examples:
+      - 4-deep, 2/1 horse:  (3) / 4 = 0.75  → LOST equity
+      - 4-deep, 4/1 horse:  (5) / 4 = 1.25  → GAINED equity
     """
     if n_horses_used <= 0:
         return 0.0
@@ -109,7 +122,12 @@ def estimate_horizontal_value(
     """Estimate value of a horizontal ticket.
 
     Args:
-        legs: list of {selections: [{horse, odds}], n_used: int} per leg
+        legs: list of {selections: [{horse, odds}], all_odds: [float, ...], n_used: int}.
+            `all_odds` should be the closing odds of every starter in that leg's
+            race (used to compute the field overround for normalization). If
+            omitted, falls back to the unnormalized raw 1/(odds+1) sum, which
+            is biased upward by the takeout factor and produces pessimistic
+            payoff estimates.
         pool_size: Pick N pool size
         takeout: horizontal pool takeout rate
 
@@ -130,9 +148,17 @@ def estimate_horizontal_value(
         if assessment["flashing_stop_sign"]:
             any_stop_sign = True
 
-        # Combined probability (sum of win probs for selections in this leg)
-        # Approximate from odds: p = 1/(odds+1), normalized
-        leg_prob = sum(1.0 / (s.get("odds", 99) + 1) for s in selections)
+        # Combined probability for this leg = sum of true win probs of selections.
+        # Raw 1/(odds+1) sums to ~1.17 across the field (overround from 17% takeout),
+        # so each horse's raw value over-estimates true probability. Normalize by
+        # full-field overround when available, then sum across selections.
+        all_odds = leg.get("all_odds")
+        sel_raw = sum(1.0 / (s.get("odds", 99) + 1) for s in selections)
+        if all_odds:
+            field_overround = sum(1.0 / (o + 1) for o in all_odds if o > 0)
+            leg_prob = sel_raw / field_overround if field_overround > 0 else sel_raw
+        else:
+            leg_prob = sel_raw  # fallback: biased upward, payoff estimate is pessimistic
         parlay_prob *= min(leg_prob, 0.99)
 
     # Estimated payoff from parlay probability
