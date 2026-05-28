@@ -689,19 +689,34 @@ Notes interact cleanly with downstream soft checks: a STRONG_NEGATIVE recommenda
 
 ### PROTO-T3.9 — ITP concepts referenced as rules but not coded
 
-Searched — zero hits for `kill_shot`, `hurdle`, `basket`, `win_only`. The doc treats these as rules ("verified against source transcripts") but the code can't enforce them.
+**Status (2026-05-28):** PARTIALLY ADDRESSED — kill-shot empirically validated and encoded as a soft note. Hurdle/basket/win-only deferred (design questions still open).
 
-**Verification approach:** Grep confirms.
+**Empirical validation of kill-shot (TB 2010-2017, 56K exactas with top-2-choice 1-2 finishes):**
 
-**Fix decision required first:** Are these enforceable rules or judgment guidance? Per ITP concept:
-- **Kill shot** (price on top, never both ways): codable. Reject `EXACTA #1/#2 + EXACTA #2/#1` if both are registered with the same horse as the longer price.
-- **Hurdle**: definitionally judgment — "deliberately reduce survival prob for equity gain." Can flag candidates ("this single creates a hurdle") but can't force the user to single.
-- **Basket of bets**: codable as a `Basket` datatype that bundles related bets at coordinated multipliers (see PROTO-T3.4).
-- **Win-only horses**: codable as a horse-level flag. Decay rate above some threshold + speed-and-fade profile = "win only" → reject placement underneath in exotics.
+| Pair | Direction | n | Mean overlay (vs Harville fair) |
+|---|---|---|---|
+| 1,2 | favorite-on-top | 32,891 | **1.121** |
+| 1,2 | upset (2nd-choice tops 1st-choice) | 22,942 | **1.225** (+9pp) |
+| 2,3 | lower-on-top | 12,042 | 0.959 |
+| 2,3 | upset (3rd-choice tops 2nd-choice) | 10,011 | 1.039 (+8pp) |
+| 3,4 | lower-on-top | 6,212 | 0.838 |
+| 3,4 | upset (4th-choice tops 3rd-choice) | 5,467 | 0.919 (+8pp) |
 
-Recommendation: code kill-shot rejection and win-only flag (low effort, prevent specific mistakes). Move "hurdle" and basket guidance to a judgment appendix.
+**Findings:**
+1. Kill-shot premise is empirically right: upset-direction exactas pay ~8-9pp more overlay than chalk-on-top across all three choice pairs. The differential is structural, not noise.
+2. Pair (1,2) chalk-on-top still has positive overlay (1.121× fair) — both directions are profitable, but upset is meaningfully better.
+3. Pairs (2,3) and (3,4) chalk-on-top have NEGATIVE overlay (<1.0) — losing money even at theoretical fair value. The kill-shot direction is barely profitable for (2,3), still loses for (3,4).
 
-**Severity:** MEDIUM
+**Fix applied:** New `_kill_shot_notes()` method on `SimDay`. Fires when an EXACTA is registered with the actual public favorite in position 1 (top) and any longer-priced horse in position 2 (under). Note explains the empirical numbers and suggests flipping the direction unless the bettor has specific information the favorite WILL win.
+
+**Verified:** Tested on R2 of GP 2014-09-06 (fav #3 at 2.3). Kill-shot pattern (`EXACTA 3 / 7,1,2`) triggers the note with all three empirical numbers; correct-direction pattern (`EXACTA 7 / 3,1`) does not.
+
+**Other ITP concepts (deferred):**
+- **Hurdle** — judgment, can't be encoded
+- **Basket of bets** — depends on PROTO-T3.4 press mechanic decision
+- **Win-only horses** — codable as a decay-rate + speed-fade-profile flag, but needs empirical validation similar to kill-shot before encoding
+
+**Severity:** MEDIUM → PARTIALLY FIXED. Hurdle/basket/win-only still open as design questions.
 
 ### PROTO-T3.10 — FTS rule contradiction across docs
 

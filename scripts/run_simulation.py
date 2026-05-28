@@ -857,6 +857,69 @@ class SimDay:
             )]
         return []
 
+    def _kill_shot_notes(self, race: int, bet_type: str, programs) -> list[str]:
+        """PROTO-T3.9: kill-shot warning on exactas keying the favorite on top.
+
+        Empirical finding (handycapper TB 2010-2017, ~56K exactas where 1st-
+        and 2nd-choice finished 1-2 in some order):
+          - Favorite-on-top exactas pay 1.121× Harville fair on average
+          - Upset direction (2nd-choice tops 1st-choice) pays 1.225×
+          - The differential of ~9 percentage points is structural, not noise
+
+        The kill-shot rule encodes this: "take the price on top, never the
+        chalk." When register_bet receives an EXACTA where the favorite is in
+        position 1 and a longer-priced horse in position 2, surface the empirical
+        finding as a note — the bettor likely should flip the direction.
+
+        Only fires for exactas keying the actual public favorite on top.
+        QUINELLA is order-independent and therefore exempt.
+        """
+        if bet_type != "EXACTA":
+            return []
+        if not isinstance(programs[0], (list, tuple)):
+            return []
+        if len(programs) < 2:
+            return []
+        fav_pgm = self._favorite_in_race(race)
+        if fav_pgm is None:
+            return []
+
+        # Position 1 (top) contains the favorite, position 2 (under) has any
+        # horse with strictly higher odds → kill-shot pattern triggered
+        top_set = [str(p) for p in programs[0]]
+        if fav_pgm not in top_set:
+            return []
+
+        race_df = self.card[self.card["race_number"] == race]
+        fav_row = race_df[race_df["program"].astype(str) == fav_pgm]
+        if fav_row.empty:
+            return []
+        fav_odds = float(fav_row["closing_odds"].iloc[0]) if pd.notna(fav_row["closing_odds"].iloc[0]) else None
+        if fav_odds is None:
+            return []
+
+        under_set = [str(p) for p in programs[1]]
+        longer_under = []
+        for pgm in under_set:
+            row = race_df[race_df["program"].astype(str) == str(pgm)]
+            if row.empty:
+                continue
+            o = row["closing_odds"].iloc[0]
+            if pd.notna(o) and float(o) > fav_odds:
+                longer_under.append((str(pgm), float(o)))
+        if not longer_under:
+            return []
+
+        under_strs = [f"#{p} ({o:.1f})" for p, o in longer_under[:3]]
+        return [(
+            f"keying favorite #{fav_pgm} ({fav_odds:.1f}) on top with "
+            f"{', '.join(under_strs)} underneath. Empirical (TB 2010-2017): "
+            f"this direction pays ~1.12× Harville fair, while the inverse "
+            f"(longer horse on top, fav 2nd) pays ~1.22× — about 9 percentage "
+            f"points more overlay. Consider flipping the direction unless you "
+            f"have specific information that the favorite WILL win this race."
+        )]
+
     def _equity_warnings(self, race: int, bet_type: str, programs) -> list[str]:
         """Soft check: flag horses in the ticket that LOSE per-leg equity.
 
@@ -925,6 +988,7 @@ class SimDay:
                 ("note",    "fav-excl",   self._favorite_exclusion_notes(race, bet_type, programs)),
                 ("note",    "pool",       self._pool_notes(race, bet_type, amount)),
                 ("note",    "horiz-conv", self._horizontal_conviction_notes(race, bet_type, programs)),
+                ("note",    "kill-shot",  self._kill_shot_notes(race, bet_type, programs)),
             ]
             for kind, tag, msgs in checks:
                 for m in msgs:
