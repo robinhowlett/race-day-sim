@@ -23,6 +23,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from sim.blinder import load_market_bias, load_pool_sizes, load_pre_race_card
 from sim.db import get_connection
 from sim.pace import predict_pace
+from sim.payoff import estimate_combo_value
+from sim.probability import (
+    benter_combine,
+    harville_ordered_prob,
+    model_probs_from_curves,
+    odds_to_probs,
+)
 from sim.ratings import format_race_ratings
 
 
@@ -230,6 +237,149 @@ class SimDay:
             "fav_edge": round(fav_edge, 1) if fav_edge else None,
             "tri_pool": tri_pool,
         }
+
+    def combined_probs(self, rn: int) -> dict:
+        """Compute model + odds + Benter-combined win probabilities per starter.
+
+        Read-only race-level numbers for exploratory analysis. Returns a dict
+        with `programs`, `odds`, `model`, `odds_probs`, `benter` arrays
+        aligned to the race's starter order. `model` and `benter` are None
+        when fewer than 3 horses have curve data.
+        """
+        race = self.card[self.card["race_number"] == rn].copy().reset_index(drop=True)
+        if race.empty:
+            return {"programs": [], "odds": [], "model": None,
+                    "odds_probs": None, "benter": None}
+
+        furlongs = float(race["furlongs"].iloc[0])
+        race_distance_ft = furlongs * 660.0
+
+        odds_list = race["closing_odds"].fillna(99).tolist()
+        programs = race["program"].astype(str).tolist()
+        odds_probs = odds_to_probs(odds_list)
+
+        has_curves = race["adj_v0"].notna() & race["adj_decay"].notna()
+        if has_curves.sum() < 3:
+            return {"programs": programs, "odds": odds_list,
+                    "model": None, "odds_probs": odds_probs, "benter": None}
+
+        adj_v0s = race["adj_v0"].fillna(race["adj_v0"].median()).tolist()
+        decays = race["adj_decay"].fillna(race["adj_decay"].median()).tolist()
+        model_probs = model_probs_from_curves(adj_v0s, decays, race_distance_ft)
+        benter = benter_combine(model_probs, odds_probs)
+
+        return {"programs": programs, "odds": odds_list,
+                "model": model_probs, "odds_probs": odds_probs, "benter": benter}
+
+    def top_value_combos(self, rn: int, top_n: int = 10,
+                         bet_type: str = "TRIFECTA") -> list[dict]:
+        """Enumerate trifecta (or exacta) combos with highest projected
+        overlay vs Stern/Harville fair value.
+
+        Limits the search to the top 6 horses by Benter probability for
+        the first two positions (third position takes any horse). Returns
+        a list of dicts sorted by overlay descending: [{combo, odds,
+        harv_prob, projected, fair, overlay, overlay_pct, fav_pos}].
+        Returns [] when probabilities can't be computed or the relevant
+        pool is missing.
+        """
+        if bet_type not in ("EXACTA", "TRIFECTA"):
+            return []
+        n_pos = 2 if bet_type == "EXACTA" else 3
+
+        cp = self.combined_probs(rn)
+        if cp["benter"] is None:
+            return []
+        benter = cp["benter"]
+        n = len(benter)
+        if n < n_pos + 1:
+            return []
+
+        race_pools = self.pools[self.pools["race_number"] == rn] if self.pools is not None else None
+        if race_pools is None or race_pools.empty:
+            return []
+        pool_match = race_pools[race_pools["bet_type"] == bet_type]
+        if pool_match.empty:
+            return []
+        pool_size = float(pool_match["pool"].iloc[0])
+        if pool_size <= 0:
+            return []
+
+        odds_list = cp["odds"]
+        programs = cp["programs"]
+        field_size = len(odds_list)
+        # Herfindahl on odds-implied probs (concentration of win-pool money)
+        op = cp["odds_probs"]
+        hhi = float((op ** 2).sum())
+
+        # Identify the favorite by minimum positive odds
+        positive_odds = [(i, o) for i, o in enumerate(odds_list) if o and o > 0]
+        if not positive_odds:
+            return []
+        fav_idx = min(positive_odds, key=lambda x: x[1])[0]
+
+        # Search the top 6 by Benter probability for the leading positions
+        top_by_prob = sorted(range(n), key=lambda i: benter[i], reverse=True)[:6]
+
+        combos = []
+        if bet_type == "EXACTA":
+            for i in top_by_prob:
+                for j in range(n):
+                    if j == i:
+                        continue
+                    harv_prob = harville_ordered_prob(benter, [i, j])
+                    if harv_prob < 1e-8:
+                        continue
+                    fav_pos = 1 if i == fav_idx else (2 if j == fav_idx else None)
+                    value = estimate_combo_value(
+                        [odds_list[i], odds_list[j]],
+                        harv_prob, pool_size, field_size, hhi, fav_pos,
+                        bet_type="EXACTA",
+                    )
+                    if value["overlay_ratio"] is not None:
+                        combos.append({
+                            "combo": f"{programs[i]}/{programs[j]}",
+                            "odds":  f"{odds_list[i]:.0f}-{odds_list[j]:.0f}",
+                            "harv_prob": harv_prob,
+                            "projected": value["projected_payoff"],
+                            "fair": value["harville_fair"],
+                            "overlay": value["overlay_ratio"],
+                            "overlay_pct": value["overlay_pct"],
+                            "fav_pos": fav_pos,
+                        })
+        else:  # TRIFECTA
+            for i in top_by_prob:
+                for j in top_by_prob:
+                    if j == i:
+                        continue
+                    for k in range(n):
+                        if k == i or k == j:
+                            continue
+                        harv_prob = harville_ordered_prob(benter, [i, j, k])
+                        if harv_prob < 1e-8:
+                            continue
+                        fav_pos = (1 if i == fav_idx else
+                                   2 if j == fav_idx else
+                                   3 if k == fav_idx else None)
+                        value = estimate_combo_value(
+                            [odds_list[i], odds_list[j], odds_list[k]],
+                            harv_prob, pool_size, field_size, hhi, fav_pos,
+                            bet_type="TRIFECTA",
+                        )
+                        if value["overlay_ratio"] is not None:
+                            combos.append({
+                                "combo": f"{programs[i]}/{programs[j]}/{programs[k]}",
+                                "odds":  f"{odds_list[i]:.0f}-{odds_list[j]:.0f}-{odds_list[k]:.0f}",
+                                "harv_prob": harv_prob,
+                                "projected": value["projected_payoff"],
+                                "fair": value["harville_fair"],
+                                "overlay": value["overlay_ratio"],
+                                "overlay_pct": value["overlay_pct"],
+                                "fav_pos": fav_pos,
+                            })
+
+        combos.sort(key=lambda c: c["overlay"], reverse=True)
+        return combos[:top_n]
 
     def propose_ticket_structures(self, rn: int, opinion: dict) -> dict:
         """For STRONG_SPECIFIC / STRONG_NEGATIVE / STRUCTURAL opinions, build

@@ -26,19 +26,19 @@ src/sim/
 ├── pace.py         — Pace prediction from v0/decay profiles with running style classification
 ├── payoff.py       — Projected exotic payoffs via OLS models (overlay/underlay quantification)
 ├── horizontal.py   — Pick 3/4/5/6 equity assessment + takeout reduction analysis
-├── kelly.py        — Fractional Kelly staking
-└── evaluate.py     — Post-race P&L + day summary
+└── kelly.py        — Fractional Kelly staking with race-context modifiers
 
 models/
-├── payoff_coefficients.json  — OLS model coefficients (from wagering-analytics)
-└── jitter_calibration.json   — Per-leg odds uncertainty for horizontal projection
+└── payoff_coefficients.json  — OLS model coefficients (from wagering-analytics)
 
 scripts/
-└── simulate_race_day.py  — Full simulation runner (interactive or batch)
+├── pick_sim_day.py     — Hash-based deterministic candidate-day selector
+└── run_simulation.py   — Canonical simulation scaffold (deterministic register/evaluate, opinion classifier, equity tables, soft-check notes)
 
 docs/
 ├── simulation-protocol.md  — Step-by-step protocol for valid simulations
-└── itp-principles.md       — Wagering principles (verified against source transcripts)
+├── wagering-framework.md   — Operational wagering rules (overrides itp-principles where they conflict)
+└── itp-principles.md       — Source-material reference (historical, see wagering-framework.md for live rules)
 ```
 
 ## Setup
@@ -47,8 +47,11 @@ docs/
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
 
-# Run a simulation
-python scripts/simulate_race_day.py --track GP --date 2014-09-06
+# Run a simulation (deterministic seed picks the day)
+python scripts/run_simulation.py --seed "any text"
+
+# Or run a specific track and date
+python scripts/run_simulation.py --track GP --date 2014-09-06
 ```
 
 ## Database

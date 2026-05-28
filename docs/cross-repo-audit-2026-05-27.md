@@ -442,7 +442,7 @@ Cross-zone fallback is structurally sound but relies on RKM-T1.2 being fixed fir
 
 ### Race-Day-Sim specific
 
-- **`evaluate.py` exotic payoff math** (RDS H1): ✅ FIXED 2026-05-28 (deprecated). Module marked deprecated with `DeprecationWarning` on import; bugs documented in module docstring. Canonical evaluator is `SimDay._evaluate_bet` in `run_simulation.py` (deterministic, all bet types, official_position-aware, DB-authoritative payoffs from wps + exotics tables). Module retained for `simulate_race_day.py` import compatibility until PROTO-T3.7 (scaffold consolidation) decides cleanup.
+- **`evaluate.py` exotic payoff math** (RDS H1): ✅ FIXED 2026-05-28 (deprecated, then deleted). Was marked deprecated with `DeprecationWarning` and bugs documented in docstring; canonical evaluator is `SimDay._evaluate_bet` in `run_simulation.py`. Module fully removed when PROTO-T3.7 (scaffold consolidation) deleted its only consumer (`simulate_race_day.py`).
 - **`kelly_exotic` formula** (RDS H5): mathematically incorrect — `edge / avg_payoff` is off by `b/(b+1)`. Under-stakes (safe direction) but doesn't match docstring.
 - **Pace thresholds are unit-naive across surfaces** (RDS M1): ✅ FIXED 2026-05-28 (re-refined with empirical surface×zone fractions). `predict_pace` takes a `surface` parameter and looks up surface×zone-specific gap-threshold fractions (P50 = contested, P85 = lone-speed) calibrated from handycapper TB 2014 data (~34K races):
 
@@ -658,13 +658,20 @@ Notes interact cleanly with downstream soft checks: a STRONG_NEGATIVE recommenda
 
 ### PROTO-T3.7 — Two scaffolds, fragmented capabilities
 
-`run_simulation.py` (the "recommended" one) has registration and evaluation but no equity/payoff projection. `simulate_race_day.py` has equity displays but no registration/evaluation. The two don't share helpers, and the "recommended" entry-point lacks the very tool (`estimate_combo_value`) the protocol's equity test needs.
+**Status (2026-05-28):** FIXED via consolidation (option A — delete + port).
 
-**Verification approach:** Compare the imports + capabilities of both scaffolds (already done in audit). No DB needed.
+**Decision rationale:** `simulate_race_day.py` had two unique features (per-horse Benter combined probabilities; top-N value combos by overlay), the rest was duplication. Two scaffolds were taxing every fix at 2× (yesterday's pace fix had to land in both files; edge naming had to land in both). Maintaining the split going forward would have required ongoing diligence to keep them aligned.
 
-**Fix:** Pick one canonical entry-point and consolidate. Recommendation: keep `run_simulation.py` as the canonical, port the value-display features from `simulate_race_day.py` into it (or into `SimDay` methods), then delete `simulate_race_day.py` or make it a thin wrapper. CLAUDE.md should reference only the canonical script.
+**Fix applied:**
+- Ported the two unique features into `SimDay` as new methods on `run_simulation.py`:
+  - `combined_probs(rn)` — returns model + odds + Benter-combined win probabilities per starter
+  - `top_value_combos(rn, top_n=10, bet_type='TRIFECTA')` — enumerates EXACTA or TRIFECTA combos with highest projected overlay vs Stern/Harville fair (search bounded to top 6 by Benter prob for first two positions; uses the new bet-type default takeouts via `estimate_combo_value`).
+- Deleted `scripts/simulate_race_day.py`.
+- Deleted `src/sim/evaluate.py` (was deprecated yesterday; only consumer was `simulate_race_day.py`).
 
-**Severity:** MEDIUM
+**Verified by code review.** Functional smoke-test deferred to next sim run when DB tunnel is back up.
+
+**Severity:** MEDIUM → FIXED.
 
 ### PROTO-T3.8 — Flat Kelly sizing ignores Fav-Edge tier modifiers
 

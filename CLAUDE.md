@@ -47,8 +47,7 @@ Follow `docs/simulation-protocol.md` and `docs/wagering-framework.md`:
 | `pace.py` | Prospective pace prediction from field v0/decay distribution |
 | `payoff.py` | Projects expected exotic payoffs using OLS models from wagering-analytics |
 | `horizontal.py` | Per-leg equity assessment for Pick 3/4/5/6 |
-| `kelly.py` | Quarter-Kelly staking, exposure caps |
-| `evaluate.py` | P&L computation, ROI, day summary |
+| `kelly.py` | Quarter-Kelly staking, exposure caps, race-context modifiers (fav-edge tier, WCMI, carryover) |
 
 ## Models (from wagering-analytics)
 
