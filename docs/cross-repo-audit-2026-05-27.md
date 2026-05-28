@@ -722,17 +722,22 @@ Notes interact cleanly with downstream soft checks: a STRONG_NEGATIVE recommenda
 
 **Verified:** Tested on R2 of GP 2014-09-06 (fav #3 at 2.3). Kill-shot pattern (`EXACTA 3 / 7,1,2`) triggers the note with all three empirical numbers; correct-direction pattern (`EXACTA 7 / 3,1`) does not.
 
-**Hurdle (added 2026-05-28):** Implemented as `_hurdle_notes()` for horizontal bets — descriptive, not prescriptive. Each leg gets a strategy classification (SINGLE / NORMAL / SPREAD-EQUITY / SURVIVE / NORMAL-WIDE) based on selection structure, plus a structural-fit assessment (APPROPRIATE / WEAK / NEUTRAL) computed from the favorite's market-vs-model mispricing magnitude.
+**Hurdle (added 2026-05-28, refined for description-only and equity-based thresholds):** Implemented as `_hurdle_notes()` for horizontal bets — purely descriptive. Each leg gets a strategy mode label and reports the favorite's market-vs-model mispricing magnitude. No fit assessment, no prescriptions, no rule-language.
 
-  - **SINGLE** (k=1): one horse in the leg
-  - **NORMAL** (k=2-3, includes fav): standard A/B with chalk
-  - **SPREAD-EQUITY** (k=2-3, excludes fav, OR k≥4 excludes fav): contrarian play. APPROPRIATE when fav market_P − model_P > 5pp (favorite meaningfully overbet); WEAK when < 2pp.
-  - **SURVIVE** (k ≥ N−1): using most of the field. APPROPRIATE when fav overbet > 10pp OR rated coverage < 40 pct; WEAK otherwise.
-  - **NORMAL-WIDE** (k ≥ 4, includes fav): expensive coverage; flagged WEAK conservatively.
+  Mode thresholds use the **fraction of public equity** (overround-normalized odds-implied probability) covered by the leg's selections, not raw counts. This auto-adjusts to field size and field shape — a 4-horse selection in a 12-horse race with a 4/5 chalk captures only ~37% of equity (SPREAD-EQUITY narrow), while the same count in a 6-horse race with no clear chalk might capture 53% (SPREAD-EQUITY-WIDE).
 
-  Per-leg notes surface mispricing magnitude when meaningful (≥1.5pp). Ticket-level mix summary shows distribution (e.g., "1 SINGLE, 2 NORMAL, 1 SPREAD-EQUITY"). When ≥2 legs flagged WEAK, summary warns: ITP says "treat horizontals like win bets — don't spread to survive without a structural reason."
+  | Mode | Trigger |
+  |---|---|
+  | SINGLE | k=1 |
+  | SURVIVE | public_equity ≥ 0.90 |
+  | WIDE-WITH-FAV | public_equity ≥ 0.75 AND includes favorite |
+  | SPREAD-EQUITY-WIDE | public_equity ≥ 0.50 AND excludes favorite |
+  | NORMAL | includes favorite, below WIDE-WITH-FAV threshold |
+  | SPREAD-EQUITY | excludes favorite, below SPREAD-EQUITY-WIDE threshold |
 
-  This is the "spreading to feel safe" anti-pattern check: a wide spread with no underlying overlay signal is the exact failure mode ITP cautions against.
+  Per-leg display surfaces both equity numbers (public_eq / model_eq pair when available) and the favorite's market-vs-model mispricing in pp when meaningful (≥1.5pp). Ticket-level mix summary shows mode distribution. The bettor sees the structural shape and the underlying market signal; the bettor decides.
+
+  Falls back to count-based mode classification when odds data is missing for the race.
 
 **Win-only (deferred to Sprint 3):** Codable as decay-rate + speed-fade-profile flag, BUT requires multi-dimensional empirical validation across (pace_scenario × distance_zone × surface × age_class) before encoding. Pace alone isn't sufficient — a SPEED_AND_FADE horse can wire in LONE_SPEED, fade in CONTESTED. Needs DB-backed analysis.
 

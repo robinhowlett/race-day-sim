@@ -1117,28 +1117,43 @@ class SimDay:
         """Classify a leg's selection structure into a strategy mode label
         and report the favorite's market-vs-model mispricing magnitude.
 
-        Pure description. The mode label names what the bettor constructed
-        (SINGLE / NORMAL / SPREAD-EQUITY / SURVIVE / NORMAL-WIDE). The
-        mispricing field gives the underlying market signal. No fit
-        assessment — the bettor reads both and decides.
+        Pure description. The mode label names what the bettor constructed,
+        based on the FRACTION OF MARKET EQUITY their selection set captures.
+        Equity-based thresholds auto-adjust to field size and field shape:
+          - 12-horse race with a 4/5 favorite: 4 mid-priced selections might
+            still capture only 30 pct of public equity → SPREAD-EQUITY narrow
+          - 6-horse race with no clear chalk: 3 selections might already
+            capture 80 pct of public equity → SURVIVE territory
+
+        Mode thresholds (public_equity = sum of overround-normalized
+        implied probabilities across the leg's selections):
+          SINGLE              — k=1
+          SURVIVE             — public_equity >= 0.90 (using "almost all
+                                 the value," regardless of horse count)
+          WIDE-WITH-FAV       — public_equity >= 0.75 AND includes favorite
+                                 (expensive coverage)
+          SPREAD-EQUITY-WIDE  — public_equity >= 0.50 AND excludes favorite
+                                 (wide contrarian)
+          NORMAL              — includes favorite, equity below WIDE-WITH-FAV
+                                 threshold (A/B with chalk)
+          SPREAD-EQUITY       — excludes favorite, equity below
+                                 SPREAD-EQUITY-WIDE threshold (narrow contrarian)
 
         Returns dict with:
-            mode: 'SINGLE' | 'NORMAL' | 'SPREAD-EQUITY' |
-                  'SPREAD-EQUITY-WIDE' | 'WIDE-WITH-FAV' | 'SURVIVE'
-              SINGLE                 — k=1
-              NORMAL                 — k=2-3, includes favorite (A/B with chalk)
-              SPREAD-EQUITY          — k=2-3, excludes favorite (narrow contrarian)
-              SPREAD-EQUITY-WIDE     — k>=4, excludes favorite (wide contrarian)
-              WIDE-WITH-FAV          — k>=4, includes favorite (expensive coverage)
-              SURVIVE                — k>=N-1 (using most of the field)
-            n_selected: count of selections in this leg
-            n_field:    field size of this leg's race
-            includes_fav: whether the favorite is among the selections
-            mispricing: float or None — market P(fav) − model P(fav).
-                Positive = favorite overbet (market gives them more pool
-                weight than the model thinks they're worth).
-                Negative = favorite underbet (market gives them less than
-                the model thinks).
+            mode: one of the labels above
+            n_selected:     count of selections in this leg
+            n_field:        field size of this leg's race
+            public_equity:  fraction of market-implied (overround-normalized)
+                            win probability captured by the selection set.
+                            None when odds data is missing.
+            model_equity:   fraction of model-implied true win probability
+                            captured by the selection set. None when curves
+                            are missing for the race.
+            includes_fav:   whether the favorite is among the selections
+            mispricing:     market P(fav) − model P(fav), or None.
+                            Positive = favorite overbet (market gives them
+                            more pool weight than the model thinks).
+                            Negative = favorite underbet.
         """
         race_df = self.card[self.card["race_number"] == race]
         n_field = len(race_df) if not race_df.empty else 0
@@ -1146,17 +1161,51 @@ class SimDay:
         fav_pgm = self._favorite_in_race(race)
         includes_fav = fav_pgm is not None and str(fav_pgm) in [str(p) for p in leg_programs]
 
-        # Mode by structure
+        # Compute equity captured by the selection set, both market-side
+        # and model-side. combined_probs returns overround-normalized
+        # odds_probs (sum to 1) and Benter-blended model probs (sum to 1).
+        public_equity = None
+        model_equity = None
+        try:
+            cp = self.combined_probs(race)
+            programs_list = cp.get("programs") or []
+            sel_set = {str(p) for p in leg_programs}
+            sel_idxs = [i for i, p in enumerate(programs_list) if p in sel_set]
+            if sel_idxs and cp.get("odds_probs") is not None:
+                op = cp["odds_probs"]
+                public_equity = float(sum(op[i] for i in sel_idxs))
+            if sel_idxs and cp.get("model") is not None:
+                mp = cp["model"]
+                model_equity = float(sum(mp[i] for i in sel_idxs))
+        except Exception:
+            public_equity = None
+            model_equity = None
+
+        # Mode by equity fraction (falls back to count-based when equity
+        # is unavailable, e.g., missing odds data).
         if k == 1:
             mode = "SINGLE"
-        elif n_field > 0 and k >= n_field - 1:
-            mode = "SURVIVE"
-        elif k <= 3:
-            mode = "NORMAL" if includes_fav else "SPREAD-EQUITY"
-        else:  # k >= 4
-            mode = "WIDE-WITH-FAV" if includes_fav else "SPREAD-EQUITY-WIDE"
+        elif public_equity is None:
+            # No equity data — fall back to count thresholds (best effort)
+            if n_field > 0 and k >= n_field - 1:
+                mode = "SURVIVE"
+            elif k <= 3:
+                mode = "NORMAL" if includes_fav else "SPREAD-EQUITY"
+            else:
+                mode = "WIDE-WITH-FAV" if includes_fav else "SPREAD-EQUITY-WIDE"
+        else:
+            if public_equity >= 0.90:
+                mode = "SURVIVE"
+            elif includes_fav and public_equity >= 0.75:
+                mode = "WIDE-WITH-FAV"
+            elif (not includes_fav) and public_equity >= 0.50:
+                mode = "SPREAD-EQUITY-WIDE"
+            elif includes_fav:
+                mode = "NORMAL"
+            else:
+                mode = "SPREAD-EQUITY"
 
-        # Favorite mispricing magnitude (market_P_fav − model_P_fav)
+        # Favorite mispricing (market_P_fav − model_P_fav)
         mispricing = None
         try:
             cp = self.combined_probs(race)
@@ -1174,6 +1223,8 @@ class SimDay:
             "mode": mode,
             "n_selected": k,
             "n_field": n_field,
+            "public_equity": public_equity,
+            "model_equity": model_equity,
             "includes_fav": includes_fav,
             "mispricing": mispricing,
         }
@@ -1209,19 +1260,33 @@ class SimDay:
         mix_str = ", ".join(f"{n} {m}" for m, n in sorted(mode_counts.items(), key=lambda x: -x[1]))
         notes = [f"strategy mix: {mix_str}"]
 
-        # Per-leg detail with mispricing where it's meaningful
+        # Per-leg detail when there's a meaningful equity gap or mispricing
+        # to surface beyond the mode label. Equity gap is "model captures
+        # markedly different fraction than market does" → tells the bettor
+        # whether their selection set is over- or under-covered relative to
+        # what the model thinks the true win probability is.
         for c in leg_classifications:
-            mp_str = ""
+            parts = []
+
+            # Equity numbers as a pair when both available
+            pub = c.get("public_equity")
+            mod = c.get("model_equity")
+            if pub is not None and mod is not None:
+                parts.append(f"public_eq {pub*100:.0f} pct / model_eq {mod*100:.0f} pct")
+            elif pub is not None:
+                parts.append(f"public_eq {pub*100:.0f} pct")
+
+            # Favorite mispricing when meaningful (>= 1.5pp)
             if c["mispricing"] is not None and abs(c["mispricing"]) >= 0.015:
                 pct = c["mispricing"] * 100
                 direction = "overbet" if pct > 0 else "underbet"
-                mp_str = f" — fav {direction} by {abs(pct):.0f}pp (market vs model)"
-            # Only emit a per-leg line when there's something to add
-            # beyond the mix summary (i.e., a meaningful mispricing number)
-            if mp_str:
+                parts.append(f"fav {direction} by {abs(pct):.0f}pp")
+
+            if parts:
                 notes.append(
                     f"leg {c['leg_idx'] + 1} (R{c['leg_race']}): {c['mode']} "
-                    f"({c['n_selected']}/{c['n_field']}){mp_str}"
+                    f"({c['n_selected']}/{c['n_field']} selected) — "
+                    f"{'; '.join(parts)}"
                 )
 
         return notes
