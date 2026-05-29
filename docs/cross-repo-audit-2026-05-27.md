@@ -1037,7 +1037,7 @@ Class-name matching (rather than direct typed catch) keeps the classifier from n
 
 **Severity:** HIGH (operational — wastes CPU on every re-run) → FIXED.
 
-### IMP-T5.4 — `dead_heat` flag only marks WIN dead heats, not 2nd/3rd
+### IMP-T5.4 — `dead_heat` flag only marks WIN dead heats, not 2nd/3rd [FIXED 2026-05-28]
 
 **File:** `chart-parser/.../RaceResult.java:804-815`
 
@@ -1053,7 +1053,19 @@ SELECT id, 1 FROM handycapper.races WHERE dead_heat = true;
 
 **Fix:** Either rename `races.dead_heat` to `races.win_dead_heat` (truthful) or extend the detection to flag any-position dead heats. Document the Parx carve-out as a comment in the code.
 
-**Severity:** MEDIUM
+**Fix applied 2026-05-28 (clarify, don't change semantics):** The audit's two named alternatives both involve invasive changes — a column rename touches schema, jOOQ codegen, JSON property order, and every consumer; an extended detection silently changes the meaning of an existing column for downstream readers who've been treating `dead_heat=true` as WIN-only. A third path is honest and least-risky: keep the WIN-only semantic by design, document it clearly, and rely on the existing per-position field on `Starter` for the more general case.
+
+Per-position dead heats are already captured on each `Starter.positionDeadHeat`. The race-level flag is a convenience for WIN payoff splits — sub-1 dead heats don't change race-level payoff math, so the field's intent matches its current implementation. Anyone needing "any-position dead heat at race granularity" can `EXISTS (SELECT 1 FROM starters WHERE race_id=r.id AND position_dead_heat=true)`.
+
+Edits:
+- `RaceResult.deadHeat` field — JavaDoc explains WIN-only semantic and points readers to `Starter.positionDeadHeat`.
+- `RaceResult.detectDeadHeat` — JavaDoc explains the WIN-only detection rationale and the per-position alternative.
+- The Parx-carve-out call site (line 510 area) — comment explains *what* the carve-out does (preserves a single official winner for that race) and *why* (the 2016 settlement was a paper anomaly, not a real on-track dead heat).
+- `ChartParser.is2016ParxOaksDebacle` — JavaDoc covers the historical context of the settlement and clarifies the carve-out's narrow applicability.
+
+No behavior change. 211/211 chart-parser tests pass.
+
+**Severity:** MEDIUM → FIXED (clarify; behavior unchanged by design).
 
 ### IMP-T5.5 — `number_of_runners` counts coupled entries as separate
 
