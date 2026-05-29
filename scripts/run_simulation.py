@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from sim.blinder import load_market_bias, load_pool_sizes, load_pre_race_card
 from sim.db import get_connection
+from sim.flb import calibrate as flb_calibrate, tier_for as flb_tier_for
 from sim.pace import predict_pace
 from sim.payoff import estimate_combo_value
 from sim.probability import (
@@ -280,6 +281,43 @@ class SimDay:
 
         return {"programs": programs, "odds": odds_list,
                 "model": model_probs, "odds_probs": odds_probs, "benter": benter}
+
+    def flb_filter(self, rn: int) -> dict:
+        """Apply FLB calibration + per-tier minimum-edge filter per starter.
+
+        For each starter, computes the FLB-calibrated edge (Benter-combined
+        model probability minus the FLB-calibrated odds probability) and
+        compares it to the OOS-validated per-tier threshold. Extreme 50/1+
+        is hard-blocked regardless of edge.
+
+        Returns a dict keyed by program string:
+            {program: {"tier", "odds_prob", "calibrated_p", "edge_flb",
+                       "threshold", "passes"}}
+        Empty dict if the race has insufficient curves to compute Benter
+        probabilities — in that case the legacy rating-edge gate stands alone.
+
+        See docs/flb-calibration-poc-2026-05-29.md. OOS-validated +EV in 7/7
+        years (2010-2016) when the per-tier table is honored together with
+        the existing rating-edge gate.
+        """
+        cp = self.combined_probs(rn)
+        if cp["benter"] is None:
+            return {}
+        out = {}
+        for pgm, op, bp in zip(cp["programs"], cp["odds_probs"], cp["benter"]):
+            tier_name, thr = flb_tier_for(float(op))
+            cal = float(flb_calibrate(float(op)))
+            edge_flb = float(bp) - cal
+            passes = (thr is not None) and (edge_flb >= thr)
+            out[str(pgm)] = {
+                "tier": tier_name,
+                "odds_prob": float(op),
+                "calibrated_p": cal,
+                "edge_flb": edge_flb,
+                "threshold": thr,
+                "passes": passes,
+            }
+        return out
 
     def top_value_combos(self, rn: int, top_n: int = 10,
                          bet_type: str = "TRIFECTA") -> list[dict]:
@@ -627,6 +665,23 @@ class SimDay:
             return result
         rated["worst_case"] = rated["edge"] - rated["band"]
 
+        # Annotate each horse with its FLB+tier status. STRONG_SPECIFIC and
+        # MODERATE_SPECIFIC restrict to horses the FLB filter passes (or that
+        # have no Benter coverage, in which case the legacy gate stands alone).
+        # STRUCTURAL/STRONG_NEGATIVE/SPREAD/NO_OPINION do not apply this filter
+        # because they are about race shape, not single-horse betting decisions.
+        flb = self.flb_filter(rn)
+        if flb:
+            rated["flb_passes"] = rated["program"].astype(str).map(
+                lambda p: flb.get(p, {}).get("passes", True)
+            )
+            rated["flb_tier"] = rated["program"].astype(str).map(
+                lambda p: flb.get(p, {}).get("tier")
+            )
+        else:
+            rated["flb_passes"] = True
+            rated["flb_tier"] = None
+
         # Pre-compute "favorite is unrated" hint so it can propagate to any
         # opinion class (the bettor wants to know this regardless of which
         # branch fires). Set early; the STRONG_NEGATIVE branch reads it.
@@ -652,7 +707,12 @@ class SimDay:
                     )
 
         # 1. STRONG_SPECIFIC — clear single-horse bet (worst_case > 5)
-        strong = rated[rated["worst_case"] > 5].sort_values("worst_case", ascending=False)
+        # Also requires the FLB+tier filter to pass: extreme 50/1+ tier is
+        # hard-blocked, and lower tiers must clear the OOS-validated edge
+        # threshold in calibrated-probability space. Both conditions together
+        # are what the multi-year POC actually validated.
+        strong = rated[(rated["worst_case"] > 5) & rated["flb_passes"]] \
+            .sort_values("worst_case", ascending=False)
         if not strong.empty:
             top = strong.iloc[0]
             result["opinion"] = "STRONG_SPECIFIC"
@@ -736,8 +796,10 @@ class SimDay:
                     return result
 
         # 4. MODERATE_SPECIFIC — single-horse opinion but band crosses or is close to zero
-        moderate = rated[(rated["worst_case"] > 0) & (rated["worst_case"] <= 5)] \
-            .sort_values("worst_case", ascending=False)
+        # Same FLB+tier filter as STRONG_SPECIFIC; extreme tier is hard-blocked.
+        moderate = rated[
+            (rated["worst_case"] > 0) & (rated["worst_case"] <= 5) & rated["flb_passes"]
+        ].sort_values("worst_case", ascending=False)
         if not moderate.empty:
             top = moderate.iloc[0]
             result["opinion"] = "MODERATE_SPECIFIC"
@@ -816,10 +878,24 @@ class SimDay:
         if summary["field_size"] < MIN_FIELD_SIZE_VERTICALS:
             checks["reasons"].append(f"Small field ({summary['field_size']}) — verticals less attractive")
 
-        # Identify conviction candidates (edge - band > 0)
+        # Identify conviction candidates: rating-edge gate (worst-case > 0) AND
+        # FLB+tier gate (FLB-calibrated edge clears the OOS-tuned tier threshold,
+        # extreme 50/1+ hard-blocked). The two gates measure different things:
+        # the rating-edge gate tests "is the model's worst-case still positive"
+        # in canonical-rating space; the FLB gate tests "after correcting for
+        # the public's odds bias, is the edge in tier-appropriate territory"
+        # in probability space. Requiring both keeps the structural protection
+        # of the original gate while gaining the +EV the FLB POC validated
+        # across 7/7 years (2010-2016). See docs/flb-calibration-poc-2026-05-29.md.
+        flb = self.flb_filter(rn) if not rated.empty else {}
         if not rated.empty:
             for _, row in rated.iterrows():
                 if pd.notna(row["edge"]) and row["band"] and (row["edge"] - row["band"] > 0):
+                    pgm = str(row["program"])
+                    f = flb.get(pgm)
+                    flb_passes = f["passes"] if f else True  # no Benter → fall back to legacy gate
+                    if not flb_passes:
+                        continue
                     checks["candidates"].append({
                         "program": row["program"],
                         "horse": row["horse"],
@@ -829,6 +905,9 @@ class SimDay:
                         "worst_case": round(row["edge"] - row["band"], 1),
                         "odds": row["odds"],
                         "form": row["form"],
+                        "flb_tier": f["tier"] if f else None,
+                        "flb_edge": round(f["edge_flb"], 4) if f else None,
+                        "flb_threshold": f["threshold"] if f else None,
                     })
 
         return checks

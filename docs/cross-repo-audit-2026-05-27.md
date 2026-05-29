@@ -567,15 +567,26 @@ Surprise: longer odds want LOWER threshold (FLB is biggest there, so calibrated 
 
 Every bettable tier is positive in every test year from 2010 to 2016. Extreme 50/1+ is unprofitable in every year. The threshold table is not a single-year artifact — it is a stable, year-after-year edge across nearly two decades. The 2016 single-year +18.7% weighted figure is conservative versus the multi-year mean.
 
-**Recommended integration:**
-1. Persist `odds_prob_calibrated = odds_prob × shrinkage(odds_prob)` into `rkm_market_analysis` alongside the raw value.
-2. In `race-day-sim/src/sim/ratings.py`, replace the market-rating computation with a calibrated version.
-3. Wire the per-tier threshold table above into `run_simulation.py`'s conviction logic. Hard-block the extreme_50/1+ tier.
-4. Multi-day sim batch (Sprint 5) for end-to-end validation.
+**Integration shipped 2026-05-29 (commit pending):**
+
+1. ✅ FLB calibration grid persisted as `models/flb_calibration.json` (200-point isotonic curve from POC step 2, 1997-2016, 7.7M observations).
+2. ✅ New `src/sim/flb.py` exposes `calibrate(odds_prob)` and `tier_for(odds_prob)`. The `TIER_TABLE` constant carries the OOS-validated thresholds; extreme 50/1+ has `min_edge=None` (hard-block).
+3. ✅ New `SimDay.flb_filter(rn)` method computes per-starter `edge_flb = benter[i] - calibrate(odds_prob[i])` and tier-passes flag.
+4. ✅ Conviction-candidate identification in `_check_play` now AND's the existing rating-edge gate (`worst_case > 0` in canonical-rating space) with the FLB+tier gate (calibrated-probability space). Both must pass.
+5. ✅ `classify_opinion` STRONG_SPECIFIC and MODERATE_SPECIFIC restrict to FLB-passing horses; extreme 50/1+ is unreachable. STRUCTURAL/STRONG_NEGATIVE/SPREAD untouched (race-shape, not single-horse).
+6. ⏳ Multi-day sim batch (Sprint 5) for end-to-end validation.
+
+**Implementation note — two edge systems coexist:** The integration uses Path C from the analysis. race-day-sim now has TWO complementary edge systems running in parallel:
+- **Rating-based edge** (canonical 100/112 scale) computed in `ratings.py` from velocity curves + form + bias multipliers. Gates structural validity (`worst_case > 0` confirms the model's confidence band clears zero).
+- **FLB-calibrated probability edge** (`combined_prob - calibrated_p`) computed at runtime in `SimDay.combined_probs()` + `SimDay.flb_filter()`. Gates the OOS-validated per-tier thresholds.
+
+The fork is acceptable: each gate measures a different thing and rejecting either alone has known failure modes (rating-only ignores the +EV thresholds we tuned; FLB-only loses structural protection). Long-term cleanup: fold the rkm Benter blend into `ratings.py` so we collapse the two systems back into one. Captured here for the next audit pass.
+
+**No upstream rkm changes required.** Original Path-C plan was to persist `odds_prob_calibrated` in `rkm_market_analysis` (cross-repo, requires re-running rkm pipeline). race-day-sim already computes Benter probabilities at runtime via `SimDay.combined_probs()`, so the FLB curve consumes those directly — single-repo integration with no DB schema changes and no coverage limit (works on any sim day, not just 1997-2016).
 
 POC code preserved in `scripts/poc/flb-calibration/`; full methodology and limitations in [flb-calibration-poc-2026-05-29.md](flb-calibration-poc-2026-05-29.md).
 
-**Severity:** HIGH (validated as ROI-driving). UI nudge done; calibration empirically validated; remaining work is the production integration + odds-tier threshold tuning.
+**Severity:** HIGH (validated as ROI-driving). UI nudge done; calibration empirically validated; integration shipped; remaining work is multi-day sim batch validation.
 - **Jockey upgrade only detected for jockeys with ≥50 starts** (RDS L6): ✅ FIXED 2026-05-28. Lowered to ≥20 starts in `blinder.py:jockey_career` CTE. Empirical: 1,567 / 3,779 apprentices (41%) had ≥50 career starts; lowering to 20 captures 1,861 (49%). The 20-start floor balances statistical meaningfulness (below ~20 starts, win rate is dominated by 0-vs-1-win jitter) against apprentice coverage. Documented inline.
 
 - **`bias_multiplier` lacks structural categorization** (RDS C2): ✅ FIXED 2026-05-29. The 11 multiplicative bias adjustments in `ratings.bias_multiplier` were stacked in a flat ~130-line function, mixing curve-omission patches (off-turf credit, generic surface-switch — empirical compensations for missing curve dimensions), race-day context priors (class movement), and race-day actor signals (equipment/medication, jockey, trainer A/E across 5 dimensions). The flat structure made independence assumptions implicit and hid the override pattern (RDS-T1.4) used to prevent double-counting between generic and trainer-specific multipliers.
