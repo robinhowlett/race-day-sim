@@ -1067,7 +1067,7 @@ No behavior change. 211/211 chart-parser tests pass.
 
 **Severity:** MEDIUM → FIXED (clarify; behavior unchanged by design).
 
-### IMP-T5.5 — `number_of_runners` counts coupled entries as separate
+### IMP-T5.5 — `number_of_runners` counts coupled entries as separate [FIXED 2026-05-28]
 
 **File:** `chart-parser/.../RaceResult.java:217-219`
 
@@ -1083,7 +1083,15 @@ GROUP BY r.id, r.number_of_runners;
 
 **Fix:** Add a `number_of_wagering_interests` column = `COUNT(DISTINCT entry_program)`. Don't change `number_of_runners` (downstream depends on it as physical-horse count).
 
-**Severity:** MEDIUM
+**Fix applied 2026-05-28:** Followed the audit's recommendation literally — added a parallel `number_of_wagering_interests smallint` column rather than changing `number_of_runners` semantics.
+
+- `pdf-importer/db/schema.sql` updated; new Flyway migration `V7__add-races-number-of-wagering-interests.sql` for test deployments. Production backfill SQL is documented in the migration as a comment for the operator.
+- `RaceWriter.countWageringInterests(List<Starter>)` collapses coupled (1+1A) and field (1+1X+1Y) entries to one interest by counting distinct `entryProgram` values. Computed in pdf-importer, not in chart-parser, so no chart-parser version bump was required.
+- The new column is referenced via `DSL.field("number_of_wagering_interests", Short.class)` rather than a regenerated jOOQ static — avoids the codegen step (which would require ALTER on the live primary DB) until the next planned regen pass.
+- Empirical: on TB 2014 (~46K races), 2,560 (5.5%) have at least one coupled entry — that's the fraction of races where the two columns now legitimately disagree.
+- New `CountWageringInterestsTest` (7 cases) covers uncoupled fields, classic 1/1A coupling, three-horse field entries, multiple coupled groups in one race, empty/null lists, and null-entryProgram handling. New `RaceWriterTest` assertion verifies the column is populated on every race in the ARP sample card and equals `number_of_runners` (no coupled entries on that card). 31/31 pdf-importer tests pass.
+
+**Severity:** MEDIUM → FIXED.
 
 ### IMP-T5.6 — Scratched horses split on comma; commas in payouts mangle records
 
