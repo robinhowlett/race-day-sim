@@ -96,9 +96,13 @@ SIM_DB_PASSWORD=handycapper
 Depends on:
 - `rkm_current_form` — time-weighted current form snapshots (PRIMARY physics input, point-in-time safe)
 - `rkm_velocity_curves` — career curves (fallback only, filtered by `first_race < sim_date` to prevent future leakage)
+- `rs_trainer_ae_daily`, `rs_jockey_career_daily`, `rs_jockey_track_weekly`, `rs_race_overround_static` — point-in-time biographical stats (from [racing-stats](https://github.com/robinhowlett/racing-stats); load_market_bias consumes these via O(1) index lookups)
 - `race_wcmi` — market informativeness score per race (from wagering-analytics AN2)
-- `trainer_ae_profiles` — 6-dimension trainer A/E profiles (from wagering-analytics AN2)
 - `races`, `starters`, `exotics`, `meds`, `equip` — base tables (from pdf-importer)
+
+Note: `trainer_ae_profiles` (the static wagering-analytics table) is no longer used —
+its responsibility moved to `rs_trainer_ae_daily` in racing-stats. WA-T1.4
+recommended dropping the static table; that recommendation now stands.
 
 ## Calibration Constants
 

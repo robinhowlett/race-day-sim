@@ -1073,13 +1073,13 @@ The schema spec lists 3 of ~13 columns for `rkm_race_situations`, misses `career
 
 **Severity:** MEDIUM
 
-### DOC-T4.12 — `GUIDE.md` repo inventory misses active repos
+### DOC-T4.12 — `GUIDE.md` repo inventory misses active repos [FIXED 2026-05-29]
 
 Doesn't list `rkm`, `wagering-analytics`, `race-day-sim` — the three repos doing the current AN1/AN2/AN3 work.
 
-**Fix:** Update GUIDE.md.
+**Fix applied 2026-05-29:** `docs/GUIDE.md` Active section now includes `rkm`, `wagering-analytics`, `race-day-sim`, plus the new `racing-stats` repo (point-in-time biographical stats — split out of wagering-analytics's broken `trainer_ae_profiles` because the leakage-fix required moving from "static aggregate" to "daily snapshot" semantics, and the responsibility is broader than wagering analytics anyway). The ENRICHMENT layer description in the diagram updated to reflect the four enrichment repos and the snapshot-pattern shared by them.
 
-**Severity:** LOW
+**Severity:** LOW → FIXED.
 
 ---
 
