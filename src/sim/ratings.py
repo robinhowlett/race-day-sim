@@ -237,137 +237,276 @@ def odds_to_rating(odds: float, field_odds: list[float], zone: str = "route",
         return 100.0
 
 
+# ─── Bias-multiplier internals ──────────────────────────────────────────
+#
+# bias_multiplier composes ~11 race-day signals into a single multiplicative
+# adjustment on the physics rating. The signals fall into three categories:
+#
+#   1. CURVE-OMISSION PATCHES — empirical multipliers that compensate for
+#      dimensions the velocity-curve layer doesn't partition by. Long-term
+#      candidates for moving upstream into a per-condition curve fit (see
+#      RKM-T1.1). Today: off-turf favorite credit, generic surface-switch.
+#
+#   2. RACE-DAY CONTEXT PRIORS — non-actor signals about the race itself
+#      (class movement, going). Independent of trainer/jockey identity.
+#      Today: class drop / rise.
+#
+#   3. RACE-DAY ACTOR SIGNALS — empirically-anchored multipliers from
+#      research findings 1-13 and AN2 trainer profiles. Equipment and
+#      medication changes, jockey moves, trainer A/E across 5 dimensions.
+#      Today: 10 multipliers across equipment, jockey, trainer.
+#
+# Independence assumptions (WA #9 noted these are imperfect):
+#
+#   STRONG: equipment/medication × jockey × trainer-claim are mutually
+#   independent — distinct causal channels (gear, rider, barn change) with
+#   no overlap.
+#
+#   CONFIRMED OVERLAPS (handled via override pattern — undo generic, apply
+#   trainer-specific when the trainer has ≥10 sample):
+#     - generic class-drop × trainer-class-drop A/E
+#     - generic surface-switch × trainer-surface-switch A/E
+#
+#   SUSPECTED OVERLAPS (NOT currently handled — flagged by audit WA #9):
+#     - layoff × claim (a horse claimed last AND on layoff is probably
+#       double-counted; both signals fire).
+#     - layoff × class-drop (same shape).
+#     - FTS × jockey-upgrade (FTS A/E may already incorporate the typical
+#       jockey-hire pattern).
+#
+# When introducing a new multiplier, check this list — if any other
+# multiplier could be measuring overlapping behavior, add an override
+# pattern instead of stacking blindly.
+
+# Threshold below which a trainer's per-dimension A/E is treated as
+# noise and the population fallback (or no override) is used.
+MIN_TRAINER_SAMPLE = 10
+
+
+def _flag(bias_df, key):
+    """Read a boolean flag from a bias-row, normalizing pandas/dict shapes."""
+    v = bias_df.get(key)
+    if v is None:
+        return False
+    if hasattr(v, 'item'):
+        return bool(v.item())
+    return bool(v)
+
+
+def _val(bias_df, key, default=None):
+    """Read a value from a bias-row, normalizing pandas/dict shapes."""
+    v = bias_df.get(key, default)
+    if v is None:
+        return default
+    if hasattr(v, 'item'):
+        return v.item()
+    return v
+
+
+# ── Section 1: Curve-omission patches ──────────────────────────────────
+
+def _patch_off_turf_favorite(bias_df, is_favorite: bool) -> float:
+    """Off-turf credit ONLY applies to the favorite (research finding 9:
+    off-turf favorite A/E = 0.884, ~+7.5% lift). Applying it to the whole
+    field inverts the conclusion. The complementary 'fade turf-only horses
+    underneath' is a separate signal still TODO — needs each horse's
+    recent surface history."""
+    if _flag(bias_df, "off_turf") and is_favorite:
+        return 1.075
+    return 1.0
+
+
+def _patch_surface_switch_generic(bias_df) -> float:
+    """Population-average direction-specific surface-switch multiplier.
+
+    Returns 1.0 when no switch is flagged or when the direction isn't in
+    the lookup. Caller must keep the returned value if a trainer-specific
+    override later needs to undo this generic effect.
+    """
+    if not _flag(bias_df, "surface_switch"):
+        return 1.0
+    prev = _val(bias_df, "prev_surface", "")
+    curr = _val(bias_df, "surface", "")
+    if prev == "Synthetic" and curr == "Turf":
+        return 1.075
+    if prev == "Synthetic" and curr == "Dirt":
+        return 1.036
+    if prev == "Turf" and curr == "Dirt":
+        return 0.969
+    return 1.0
+
+
+# ── Section 2: Race-day context priors ─────────────────────────────────
+
+def _prior_class_move(bias_df) -> float:
+    """Generic class drop / rise multiplier from research finding.
+
+    Returns 1.029 for DROP, 0.961 for RISE, 1.0 otherwise. Caller must
+    keep the returned value if a trainer-specific override later needs
+    to undo this generic effect.
+    """
+    move = _val(bias_df, "class_move")
+    if move == "DROP":
+        return 1.029
+    if move == "RISE":
+        return 0.961
+    return 1.0
+
+
+# ── Section 3a: Race-day actor signals — equipment / medication ────────
+
+def _signal_equipment_medication(bias_df) -> float:
+    """First-time-lasix / blinkers-off / first-time-blinkers multipliers
+    from research findings (relative A/E vs population baseline)."""
+    m = 1.0
+    if _flag(bias_df, "first_time_lasix"):
+        m *= 1.022   # 0.818 / 0.800
+    if _flag(bias_df, "blinkers_off"):
+        m *= 1.101   # 0.881 / 0.800
+    if _flag(bias_df, "first_time_blinkers"):
+        m *= 0.970   # 0.776 / 0.800 — FTB are overbet
+    return m
+
+
+# ── Section 3b: Race-day actor signals — jockey ────────────────────────
+
+def _signal_jockey(bias_df) -> float:
+    """Jockey upgrade / downgrade and 5lb-bug allowance multipliers."""
+    m = 1.0
+    switch = _val(bias_df, "jockey_switch_type", "SAME")
+    if switch == "UPGRADE":
+        m *= 1.051
+    elif switch == "DOWNGRADE":
+        m *= 0.888
+    allowance = _val(bias_df, "jockey_allowance", 0) or 0
+    if allowance == 5:
+        m *= 1.031   # 0.825 / 0.800
+    return m
+
+
+# ── Section 3c: Race-day actor signals — trainer (independent) ─────────
+
+def _signal_trainer_claim(bias_df) -> float:
+    """Trainer A/E for first-3-starts after a claim, with population
+    fallback when the trainer has no record / insufficient sample."""
+    if not _flag(bias_df, "claimed_last_race"):
+        return 1.0
+    ae = _val(bias_df, "trainer_claim_ae")
+    n = _val(bias_df, "trainer_claim_starts", 0) or 0
+    if ae and n >= MIN_TRAINER_SAMPLE:
+        return float(ae) / BASELINE_AE
+    return 1.034   # population average claim edge
+
+
+def _signal_trainer_fts(bias_df) -> float:
+    """Trainer A/E for first-time-starters (only fires when the horse
+    is FTS). Population fallback at 0.970 (FTS are overbet)."""
+    if not _flag(bias_df, "is_fts"):
+        return 1.0
+    ae = _val(bias_df, "trainer_fts_ae")
+    n = _val(bias_df, "trainer_fts_starts", 0) or 0
+    if ae and n >= MIN_TRAINER_SAMPLE:
+        return float(ae) / BASELINE_AE
+    if n < MIN_TRAINER_SAMPLE:
+        return 0.970   # 0.776 / 0.800 — population FTS A/E
+    return 1.0
+
+
+def _signal_trainer_layoff(bias_df) -> float:
+    """Trainer A/E for 90+-day-layoff returns. No population fallback —
+    only applied when the trainer has a record."""
+    if not _flag(bias_df, "is_layoff"):
+        return 1.0
+    ae = _val(bias_df, "trainer_layoff_ae")
+    n = _val(bias_df, "trainer_layoff_starts", 0) or 0
+    if ae and n >= MIN_TRAINER_SAMPLE:
+        return float(ae) / BASELINE_AE
+    return 1.0
+
+
+# ── Section 3d: Race-day actor signals — trainer overrides ─────────────
+# These replace a generic effect (sections 1-2) when the trainer has
+# enough sample. The generic A/E already includes the population effect
+# the trainer's measurement reflects, so stacking would double-count.
+
+def _signal_trainer_surface_switch_override(running: float, bias_df,
+                                            generic_mult: float) -> float:
+    """If the trainer has a surface-switch A/E with ≥MIN_TRAINER_SAMPLE
+    starts, undo the generic surface-switch contribution and substitute
+    the trainer-specific multiplier. Otherwise return `running` unchanged.
+    See RDS-T1.4 for the override pattern's origin."""
+    if not _flag(bias_df, "surface_switch"):
+        return running
+    ae = _val(bias_df, "trainer_switch_ae")
+    n = _val(bias_df, "trainer_switch_starts", 0) or 0
+    if ae and n >= MIN_TRAINER_SAMPLE:
+        if generic_mult != 1.0:
+            running /= generic_mult
+        running *= float(ae) / BASELINE_AE
+    return running
+
+
+def _signal_trainer_class_drop_override(running: float, bias_df,
+                                        generic_mult: float) -> float:
+    """If the trainer has a class-drop A/E with ≥MIN_TRAINER_SAMPLE
+    starts, undo the generic class-drop contribution and substitute
+    the trainer-specific multiplier. Mirrors the surface-switch override
+    pattern (see RDS-T1.4)."""
+    if _val(bias_df, "class_move") != "DROP":
+        return running
+    ae = _val(bias_df, "trainer_drop_ae")
+    n = _val(bias_df, "trainer_drop_starts", 0) or 0
+    if ae and n >= MIN_TRAINER_SAMPLE:
+        if generic_mult != 1.0:
+            running /= generic_mult
+        running *= float(ae) / BASELINE_AE
+    return running
+
+
+# ── Public composer ────────────────────────────────────────────────────
+
 def bias_multiplier(bias_df: pd.Series, is_favorite: bool = False) -> float:
     """Compute multiplicative bias factor from a starter's market bias row.
 
     Each applicable factor contributes its relative A/E (factor_ae / baseline).
-    Factors with insufficient sample (< 10 starts) are skipped.
-    Factors combine multiplicatively.
+    Factors with insufficient sample (< MIN_TRAINER_SAMPLE) are skipped.
+    Factors combine multiplicatively unless an override pattern applies
+    (see module-level docstring for category breakdown and override list).
 
     Args:
-        bias_df: a single row from load_market_bias() result
+        bias_df: a single row from load_market_bias() result.
         is_favorite: whether this starter is the post-time favorite. Some
             biases (e.g., off-turf credit) only apply to the favorite per
             research-findings.md.
 
     Returns:
-        Multiplier to apply to model probability (1.0 = no bias, >1 = underbet, <1 = overbet)
+        Multiplier to apply to model probability (1.0 = no bias,
+        >1 = underbet, <1 = overbet).
     """
-    multiplier = 1.0
+    m = 1.0
 
-    def _flag(key):
-        v = bias_df.get(key)
-        if v is None:
-            return False
-        if hasattr(v, 'item'):
-            return bool(v.item())
-        return bool(v)
+    # Section 1 — Curve-omission patches.
+    m *= _patch_off_turf_favorite(bias_df, is_favorite)
+    surface_switch_generic = _patch_surface_switch_generic(bias_df)
+    m *= surface_switch_generic
 
-    def _val(key, default=None):
-        v = bias_df.get(key, default)
-        if v is None:
-            return default
-        if hasattr(v, 'item'):
-            return v.item()
-        return v
+    # Section 2 — Race-day context priors.
+    class_move_generic = _prior_class_move(bias_df)
+    m *= class_move_generic
 
-    # First-time Lasix: relative A/E = 0.818 / 0.800 = 1.022
-    if _flag("first_time_lasix"):
-        multiplier *= 1.022
+    # Section 3 — Race-day actor signals.
+    m *= _signal_equipment_medication(bias_df)
+    m *= _signal_jockey(bias_df)
+    m *= _signal_trainer_claim(bias_df)
+    m *= _signal_trainer_fts(bias_df)
+    m *= _signal_trainer_layoff(bias_df)
 
-    # Blinkers off: relative A/E = 0.881 / 0.800 = 1.101
-    if _flag("blinkers_off"):
-        multiplier *= 1.101
+    # Trainer overrides — must run AFTER the generics they replace and
+    # need the generic value to undo it. See override helpers' docstrings.
+    m = _signal_trainer_surface_switch_override(m, bias_df, surface_switch_generic)
+    m = _signal_trainer_class_drop_override(m, bias_df, class_move_generic)
 
-    # First-time blinkers: relative A/E = 0.776 / 0.800 = 0.970
-    if _flag("first_time_blinkers"):
-        multiplier *= 0.970
-
-    # Off-turf credit applies ONLY to the favorite (research finding 9:
-    # off-turf favorite A/E = 0.884, ~+7.5% lift vs baseline). Applying it
-    # to the whole field inverts the conclusion. The complementary "fade
-    # turf-only horses underneath" is a separate signal still TODO — needs
-    # access to each horse's recent surface history.
-    if _flag("off_turf") and is_favorite:
-        multiplier *= 1.075
-
-    # Jockey upgrade/downgrade
-    switch = _val("jockey_switch_type", "SAME")
-    if switch == "UPGRADE":
-        multiplier *= 1.051
-    elif switch == "DOWNGRADE":
-        multiplier *= 0.888
-
-    # Jockey allowance (5lb bug): relative A/E = 0.825 / 0.800 = 1.031
-    allowance = _val("jockey_allowance", 0) or 0
-    if allowance == 5:
-        multiplier *= 1.031
-
-    # Surface switch — population-average multiplier by direction.
-    # The trainer-specific block below may override this with the trainer's
-    # own surface-switch A/E (which already incorporates the population
-    # effect), so we track the value applied and undo it before substituting.
-    surface_switch_mult = 1.0
-    if _flag("surface_switch"):
-        prev = _val("prev_surface", "")
-        curr = _val("surface", "")
-        if prev == "Synthetic" and curr == "Turf":
-            surface_switch_mult = 1.075
-        elif prev == "Synthetic" and curr == "Dirt":
-            surface_switch_mult = 1.036
-        elif prev == "Turf" and curr == "Dirt":
-            surface_switch_mult = 0.969
-        multiplier *= surface_switch_mult
-
-    # Class drop
-    if _val("class_move") == "DROP":
-        multiplier *= 1.029
-    elif _val("class_move") == "RISE":
-        multiplier *= 0.961
-
-    # Claimed last race (first start with new trainer)
-    if _flag("claimed_last_race"):
-        trainer_claim_ae = _val("trainer_claim_ae")
-        if trainer_claim_ae and (_val("trainer_claim_starts", 0) or 0) >= 10:
-            multiplier *= float(trainer_claim_ae) / BASELINE_AE
-        else:
-            multiplier *= 1.034  # population average claim edge
-
-    # Trainer FTS (only applies if horse is FTS)
-    if _flag("is_fts"):
-        trainer_fts_ae = _val("trainer_fts_ae")
-        if trainer_fts_ae and (_val("trainer_fts_starts", 0) or 0) >= 10:
-            multiplier *= float(trainer_fts_ae) / BASELINE_AE
-        # If trainer has no FTS record, use population FTS A/E = 0.776
-        # which means FTS are overbet: 0.776 / 0.800 = 0.970
-        elif (_val("trainer_fts_starts", 0) or 0) < 10:
-            multiplier *= 0.970
-
-    # Trainer layoff (only if returning from 90+ days)
-    if _flag("is_layoff"):
-        trainer_layoff_ae = _val("trainer_layoff_ae")
-        if trainer_layoff_ae and (_val("trainer_layoff_starts", 0) or 0) >= 10:
-            multiplier *= float(trainer_layoff_ae) / BASELINE_AE
-
-    # Trainer surface switch — overrides the generic (the trainer's A/E
-    # already incorporates the population effect, so applying both
-    # double-counts; mirror the class-drop pattern below).
-    if _flag("surface_switch"):
-        trainer_switch_ae = _val("trainer_switch_ae")
-        if trainer_switch_ae and (_val("trainer_switch_starts", 0) or 0) >= 10:
-            if surface_switch_mult != 1.0:
-                multiplier /= surface_switch_mult  # undo generic
-            multiplier *= float(trainer_switch_ae) / BASELINE_AE
-
-    # Trainer class drop (only if dropping AND trainer has record)
-    if _val("class_move") == "DROP":
-        trainer_drop_ae = _val("trainer_drop_ae")
-        if trainer_drop_ae and (_val("trainer_drop_starts", 0) or 0) >= 10:
-            # Replace the generic drop factor with trainer-specific
-            multiplier /= 1.029  # undo generic
-            multiplier *= float(trainer_drop_ae) / BASELINE_AE
-
-    return multiplier
+    return m
 
 
 def compute_edge(rating: float, odds: float, field_odds: list[float],
