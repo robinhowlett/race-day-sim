@@ -80,7 +80,7 @@ These directly cause inflated edges, future-data leakage, or incorrect probabili
 
 **Severity:** HIGH. Until recompute, 2nd-start horses (a key market situation, especially for FTS-following debuts) remain silently excluded from `current_form`.
 
-### RKM-T1.4 — Career baseline leaks future data into v0_trend
+### RKM-T1.4 — Career baseline leaks future data into v0_trend [FIXED 2026-05-29]
 
 **Files:** `rkm/scripts/compute_form.py:53-62, 105-106, 140`
 
@@ -92,7 +92,19 @@ There is no path in the code by which the stored `career_v0` could be as-of-date
 
 **Fix:** Compute career baseline as a trailing aggregate (only races before the snapshot date), not the full-career curve. This means `career_v0` becomes a per-snapshot computation, not a join from `rkm_velocity_curves`.
 
-**Severity:** HIGH. Breaks the pre-race firewall for `v0_trend` and `career_v0`. Any consumer using `v0_trend` to flag improvers/decliners is using future information.
+**Fix applied 2026-05-29:** `compute_form_at_date` now derives both fits from the same `prior_observations` set (which the caller already constructs as strictly-prior races): the **recent** values come from a recency-weighted polyfit (DECAY_FACTOR ** days/30), and the **career-to-date** values come from an *unweighted* polyfit on the same data. `v0_trend = current_v0 - career_v0` now means "recent vs career-to-date" rather than the old "recent vs full-career-with-future-leak."
+
+Implementation:
+- `compute_form_at_date` signature changed: dropped the `career_v0` / `career_decay` parameters. Both quantities now come out of the function rather than going into it. Old callers that passed those args fail with a `TypeError` (covered by a regression test).
+- `compute_form.py` no longer joins `rkm_velocity_curves` for the career parameters. It still loads the `(horse_key, surface, distance_zone)` set from that table as a quality gate (filters out horses with too-few observations to fit a meaningful curve at all) — same eligibility behavior as before, just without the leaky values.
+- Schema unchanged: `rkm_current_form.career_v0` / `career_decay` keep the same column names and types but now hold trailing-career values.
+- 9 new pytest cases in `tests/test_form.py` cover: point-in-time invariance, robustness to a future race accidentally appearing in the input, recent-higher-than-career → positive trend, recent-lower → negative trend, single-prior-race → zero trend, sub-threshold inputs returning None, and the dropped-parameters contract.
+
+CLAUDE.md updated: `rkm_current_form` is now strictly pre-race-safe across **all** columns (was previously "partially" because `career_v0` / `career_decay` came from a static full-career fit).
+
+**Operator action:** the `compute_form.py` recompute that's already pending for RKM-T1.3 (2nd-start coverage) will also materialize the trailing-career baseline. Run once to refresh both.
+
+**Severity:** HIGH (broke the pre-race firewall for `v0_trend` and `career_v0`) → FIXED.
 
 ### WA-T1.1 — Stern k = 0.81 was never empirically calibrated
 
