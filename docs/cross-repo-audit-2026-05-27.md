@@ -520,7 +520,34 @@ The latter is the more likely explanation given what the model can't see: workou
 
 **Status:** UI nudge done. Long-term FLB correction (option 1) remains the substantive ROI-moving work — captured in completion-plan.md Sprint 4.
 
-**Severity:** HIGH (likely ROI-driving). The UI nudge surfaces the issue every run; the empirical correction needs separate focused work.
+**Empirical investigation 2026-05-29 ([flb-calibration-poc-2026-05-29.md](flb-calibration-poc-2026-05-29.md)):** Built a full FLB calibration POC on 7.7M starter-races (1997-2016), validated on a 2015-2016 year-out holdout. Findings:
+
+- **The FLB is empirically present** as theory predicts — monotonic from shrinkage 0.67 at <2% implied (longshots overbet) to 1.07 at 40%+ implied (chalk underbet).
+- **Calibration alone improves log-loss and Brier modestly** (significant given 507K observations, but small in absolute terms because most observations are already well-calibrated in the middle range).
+- **At wagering-relevant edge thresholds, FLB calibration delivers real ROI lift:**
+
+  | Strategy | n bets | ROI |
+  |---|---|---|
+  | Live overlay (baseline edge>0.05) | 36,713 | +5.2% |
+  | FLB-corrected (edge>0.05) | 31,995 | **+7.3%** |
+  | Live overlay (baseline edge>0.10) | 10,247 | +6.7% |
+  | FLB-corrected (edge>0.10) | 8,075 | **+9.5%** |
+
+  ~2-3pp ROI improvement at the +5% and +10% thresholds (~40% relative).
+
+- **CRITICAL CAVEAT:** Naive FLB calibration without an edge threshold makes ROI WORSE. `FLB edge>0` (no threshold) returns ROI of −12.3%, vs baseline `edge>0` at −3.2%. The FLB shrinkage of public belief on longshots flips many bad longshot bets into apparently +EV, then they lose 46% on average. **Options 1 and 2 from the audit must be implemented TOGETHER**, not as alternatives.
+
+- **Subgroup analysis:** field size matters meaningfully for the deepest longshot tier — small-field 50/1+ shrinkage 0.49 vs large-field 0.75. Surface and class effects modest. A field-size-aware longshot-bucket adjustment is a future enhancement; a global curve is adequate for production integration.
+
+**Recommended integration (per the POC's writeup):**
+1. Persist `odds_prob_calibrated = odds_prob × shrinkage(odds_prob)` into `rkm_market_analysis` alongside the raw value.
+2. In `race-day-sim/src/sim/ratings.py`, replace the market-rating computation with a calibrated version.
+3. Add an odds-tier minimum-edge threshold table (rough starting point: 0.05 for chalk → 0.15 for 20/1+ → 0.20+ with explicit rationale for 50/1+).
+4. Re-validate via multi-day sim batch (Sprint 5).
+
+POC code preserved in `scripts/poc/flb-calibration/`; full methodology and limitations in [flb-calibration-poc-2026-05-29.md](flb-calibration-poc-2026-05-29.md).
+
+**Severity:** HIGH (validated as ROI-driving). UI nudge done; calibration empirically validated; remaining work is the production integration + odds-tier threshold tuning.
 - **Jockey upgrade only detected for jockeys with ≥50 starts** (RDS L6): ✅ FIXED 2026-05-28. Lowered to ≥20 starts in `blinder.py:jockey_career` CTE. Empirical: 1,567 / 3,779 apprentices (41%) had ≥50 career starts; lowering to 20 captures 1,861 (49%). The 20-start floor balances statistical meaningfulness (below ~20 starts, win rate is dominated by 0-vs-1-win jitter) against apprentice coverage. Documented inline.
 
 - **`bias_multiplier` lacks structural categorization** (RDS C2): ✅ FIXED 2026-05-29. The 11 multiplicative bias adjustments in `ratings.bias_multiplier` were stacked in a flat ~130-line function, mixing curve-omission patches (off-turf credit, generic surface-switch — empirical compensations for missing curve dimensions), race-day context priors (class movement), and race-day actor signals (equipment/medication, jockey, trainer A/E across 5 dimensions). The flat structure made independence assumptions implicit and hid the override pattern (RDS-T1.4) used to prevent double-counting between generic and trainer-specific multipliers.
