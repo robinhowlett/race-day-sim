@@ -443,7 +443,7 @@ Cross-zone fallback is structurally sound but relies on RKM-T1.2 being fixed fir
 ### Race-Day-Sim specific
 
 - **`evaluate.py` exotic payoff math** (RDS H1): ✅ FIXED 2026-05-28 (deprecated, then deleted). Was marked deprecated with `DeprecationWarning` and bugs documented in docstring; canonical evaluator is `SimDay._evaluate_bet` in `run_simulation.py`. Module fully removed when PROTO-T3.7 (scaffold consolidation) deleted its only consumer (`simulate_race_day.py`).
-- **`kelly_exotic` formula** (RDS H5): mathematically incorrect — `edge / avg_payoff` is off by `b/(b+1)`. Under-stakes (safe direction) but doesn't match docstring.
+- **`kelly_exotic` formula** (RDS H5): ✅ FIXED 2026-05-28 by deletion. Function was dead code (never called); the formula was off by `b/(b+1)` and didn't match its docstring. Removing it eliminates the foot-gun. `size_bets` in `kelly.py` is the canonical exotic sizer.
 - **Pace thresholds are unit-naive across surfaces** (RDS M1): ✅ FIXED 2026-05-28 (re-refined with empirical surface×zone fractions). `predict_pace` takes a `surface` parameter and looks up surface×zone-specific gap-threshold fractions (P50 = contested, P85 = lone-speed) calibrated from handycapper TB 2014 data (~34K races):
 
   | Surface×Zone | Contested frac | Lone-speed frac | n_races |
@@ -498,13 +498,14 @@ The latter is the more likely explanation given what the model can't see: workou
 - **Future enhancement (deferred):** parse Christopher Larmey's @derby1592 takeout PDF (`Takeout info 5-16-2026.pdf`) to add a 2026 effective-date snapshot. Would unlock: (a) time-versioned takeout records (~1% precision instead of ±3% with the 2009 snapshot alone), (b) **CAW-limited flags** as a per-(track, pool) market-structure signal — when CAWs are excluded from a pool, late-money composition differs, surfacing as a distinct overlay landscape, (c) jackpot/carryover type flags and specialty-wager attribution. The CAW flag is the most novel signal — not in the current data at all. Half-day of work; deferred because takeout precision isn't currently a binding constraint.
 - **Coupled entries / dead heats / late scratches not handled** (WA #13)
 - **Surface dummies all-zero in EXACTA/TRIFECTA models** (WA #14): `models/payoff_coefficients.json` shows `surface_T = surface_S = 0.0` with `p_value = NaN`. Surface effect silently dropped.
-- **Outliers** (WA #15): No winsorization for extreme payoffs in OLS bet types.
+- **Outliers** (WA #15): ✅ FIXED 2026-05-28. `fit_payoff_models.py` now winsorizes `actual_payoff` at the 99.5th percentile before log-transform in both `load_vertical` and `load_horizontal`. New module constant `WINSOR_PCT = 0.995`. The cap-then-log order matters — capping after log compresses the signal-bearing right tail. Logs the count + threshold per bet type for transparency. Fitted models will need re-running to materialize the change (no automatic invalidation).
 - **`jock_upgrade` claimed as 6th dimension but never computed** (WA #16): Placeholder zeros.
-- **Claim query double-counts horses claimed multiple times** (WA #7): Per-claim-event ROW_NUMBER, not per-horse.
-- **Drop/layoff filtered to dirt/fast only** (WA #8): Other dimensions aren't. Composites are incoherent.
+- **Claim query double-counts horses claimed multiple times** (WA #7): ✅ FIXED 2026-05-28. `compute_trainer_profiles.py:SQL_CLAIM` now adds a `post_claim_per_start` CTE that picks the most-recent prior `claim_date` per starter (`ROW_NUMBER() OVER (PARTITION BY s.id ORDER BY c.claim_date DESC)` — keep `claim_rank=1`). Empirical impact on 2014 TB: removes 3,767 / 33,160 (11.4%) duplicated rows where a horse was claimed twice within 180 days and both windows captured the same later start. Trainer A/E counts now treat each post-claim start as belonging to one and only one claim event — the most recent.
+- **Drop/layoff filtered to dirt/fast only** (WA #8): ✅ FIXED 2026-05-28. `compute_trainer_profiles.py:SQL_CLAIM` now also constrains to `surface='Dirt' AND track_condition='Fast'` (both at the inner `claims` CTE that identifies claim events and at the outer join that pulls subsequent starts). DROP/LAYOFF/CLAIM now share the same population baseline. SQL_SWITCH stays unfiltered by design — a switch event spans two surfaces, so a per-surface filter would discard the signal — and the rationale is documented inline above the CTE. Consumers comparing dimension A/Es should treat SWITCH as measured against a broader population. Note: a fully principled fix would compute a per-dimension `BASELINE_AE` rather than reuse the all-trainer 1.000 baseline; that's research work, not a quick fix.
 - **Dimensions are not independent** (WA #9): layoff×drop, layoff×switch overlap. Composite scoring misuses them.
 - **Velocity range filter inconsistent** (RKM #6): ✅ FIXED 2026-05-28. `form.py:MAX_VELOCITY` lowered 85.0 → 70.0 to match `curves.py:MAX_VELOCITY`. Empirical: 0.016% of `indiv_fractionals` exceed 70 ft/s (1,632 of 10M sampled), max observed 2,671 ft/s (clearly bad data — that's ~1,800 mph). 70 was already the correct value; form.py's 85 was the inconsistency. Note: 85 was used in `curves.py` as a separate sanity ceiling on the FITTED v0 (regression intercept can exceed observed velocity); that 85 ceiling stays put.
 - **v0 extrapolated from midpoint velocities** (RKM #7): No near-zero anchor. Conflates start speed with stamina.
+- **`slope > 0.001` clamp inconsistency between `curves.py` and `form.py`** (RKM #8): ✅ FIXED 2026-05-28 by clarification. Same threshold in both modules but different actions: `curves.py` rejects (returns None), `form.py` clamps to flat. The asymmetry is intentional — career curves on many races with positive slope strongly indicate bad data, while recent-form fits on few weighted observations are more likely to show spurious positive slope from noise (rejecting would discard usable form coverage). Extracted as `POSITIVE_SLOPE_CLAMP_THRESHOLD = 0.001` in `curves.py`; `form.py` imports it. Both call sites now have docstrings explaining the rationale. No data change; this prevents future "harmonization" from accidentally regressing the trade-off.
 
 ---
 
@@ -820,7 +821,7 @@ Full coverage (all legs have a candidate) emits nothing — that's normal. The b
 
 ### Dead code findings
 
-- `kelly_exotic` (kelly.py:26-53) — not called from any script
+- ~~`kelly_exotic` (kelly.py:26-53) — not called from any script~~ ✅ DELETED 2026-05-28 (Tier 2 quick win — never wired up, formula was off by `b/(b+1)`, `size_bets` is the canonical exotic sizer).
 - `evaluate_race` (evaluate.py:6) — imported in simulate_race_day.py but never called
 - `MIN_EDGE_CONVICTION = 0` — misleadingly named (the check is `worst_case > 0`; constant is a no-op)
 

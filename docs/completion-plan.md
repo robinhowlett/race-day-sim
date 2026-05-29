@@ -48,22 +48,26 @@ Three priority responses:
 
 ### Category D — Tier 2 remaining (smaller items)
 
+**Closed 2026-05-28 (Tier 2 quick wins):**
+- WA #7 — claim CTE now dedupes by starter_id, picks most-recent claim. 11.4% over-counting eliminated.
+- WA #8 — CLAIM filter aligned to Dirt/Fast (matches DROP/LAYOFF); SWITCH stays cross-surface by design with inline rationale.
+- WA #15 — `fit_payoff_models.py` winsorizes payoff at 99.5th percentile before log; new `WINSOR_PCT` constant.
+- RKM #8 — `POSITIVE_SLOPE_CLAMP_THRESHOLD` extracted to `curves.py`, imported by `form.py`. Asymmetric handling (reject vs clamp) preserved with docstring rationale.
+- RDS H5 — `kelly_exotic` deleted (dead code; formula was wrong; `size_bets` is the canonical exotic sizer).
+
+**Still open:**
+
 | ID | Description | Effort |
 |---|---|---|
 | RKM-T1.4 | Career baseline future leak in `v0_trend` (still confirmed but unaddressed) | ~1 day |
 | RKM-T2.2 | `rkm_current_form` lacks surface/zone partition (one row per starter mixes sprint/route, dirt/turf) | ~2 days |
-| WA #7 | Claim query double-counts horses claimed multiple times (per-claim ROW_NUMBER, not per-horse) | ~30 min |
-| WA #8 | Drop/layoff filtered to dirt/fast only; other dimensions aren't (composites incoherent) | ~30 min |
 | WA #9 | Dimensions are not independent (layoff×drop, layoff×switch overlap; composite scoring misuses) | ~half day, design work |
 | WA #11/#13 | Coupled entries treated as independent everywhere — V003, Stern, payoff, WCMI, trainer A/E (~3-5% of US races affected) | ~half day |
 | WA #14 | Surface dummies all-zero in EXACTA/TRIFECTA OLS models (NaN p-values; need to re-fit) | ~1 day |
-| WA #15 | No winsorization for extreme payoffs in OLS bet types | ~30 min |
 | WA #16 | `jock_upgrade` claimed as 6th dimension but never computed (placeholder zeros) | ~1 day |
 | WA-T1.3 follow-up | Pick 5/6 OLS rebuild with `log_carryover` feature (existing models exclude carryover, making them unfit for the actual play-decision use case) | ~1 day |
-| RDS H5 | `kelly_exotic` formula incorrect (under-stakes, dead code currently) | ~30 min if anyone calls it; otherwise just delete |
 | Cross-cutting | Date range chaos — 1991-2017 vs 1999-2017 vs 1997-2016 vs 2005-2017 across scripts | ~1 day |
 | RKM #7 | v0 extrapolation conflation with stamina (no near-zero anchor) | ~1 day, requires curve refit |
-| RKM #8 | `slope > 0.001` clamp inconsistency between curves.py and form.py | ~30 min |
 | RKM #9 | Outlier exclusion criteria from spec (race time > 2× field mean, etc.) not implemented | ~half day |
 
 ### Category E — Different repos / out of scope for race-day-sim core

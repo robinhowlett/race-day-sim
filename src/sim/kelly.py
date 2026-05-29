@@ -113,38 +113,6 @@ def kelly_win(p_model: float, odds: float, fraction: float = 0.25) -> float:
     return max(0.0, kelly_full * fraction)
 
 
-def kelly_exotic(combinations: list[tuple[float, float]], fraction: float = 0.25) -> float:
-    """Fractional Kelly for an exotic ticket covering multiple combinations.
-
-    Args:
-        combinations: list of (probability, estimated_payoff_per_dollar) tuples
-            for each combination on the ticket
-        fraction: Kelly fraction
-
-    Returns: fraction of bankroll to allocate to this ticket
-    """
-    if not combinations:
-        return 0.0
-
-    # Expected value of the ticket
-    total_prob = sum(p for p, _ in combinations)
-    expected_return = sum(p * payoff for p, payoff in combinations)
-
-    # Simple Kelly approximation for exotic:
-    # ev_per_dollar = expected_return - 1 (net expected per dollar wagered)
-    # variance approximation from the payoff distribution
-    # Note: this is per-dollar EV, NOT the same as ratings.py:edge
-    # (rating-point distance) or payoff.py:overlay_pct (% above fair value).
-    ev_per_dollar = expected_return - 1.0
-    if ev_per_dollar <= 0:
-        return 0.0
-
-    # Approximate Kelly fraction: ev_per_dollar / avg_payoff
-    avg_payoff = expected_return / total_prob if total_prob > 0 else 1.0
-    kelly_full = ev_per_dollar / avg_payoff
-    return max(0.0, kelly_full * fraction)
-
-
 def size_bets(race_probs: np.ndarray, odds: np.ndarray, bankroll: float,
               fraction: float = 0.25, max_exposure: float = 0.05,
               win_cap: float = 0.03, exotic_cap: float = 0.02,
