@@ -1069,13 +1069,15 @@ PDF format is "Last, First". For "Smith, John Jr." the suffix lands in firstName
 
 **Severity:** MEDIUM
 
-### IMP-T5.8 — Schema spec lists `exotics.bet_type` and `exotics.pool_type` columns that don't exist
+### IMP-T5.8 — Schema spec lists `exotics.bet_type` and `exotics.pool_type` columns that don't exist [FIXED 2026-05-28]
 
 **Files:** `handycapper-schema.md:196-197` vs actual `db/schema.sql:228-247`
 
 **Fix:** Either add the columns or remove from spec.
 
-**Severity:** LOW
+**Fix applied 2026-05-28:** Reality won — the live DB has these columns and AN1 / race-day-sim both query them. Brought the canonical schema in sync: added the columns to `pdf-importer/db/schema.sql` (`varchar(30)` and `varchar(20)`) with matching indexes, and added Flyway migration `V6__add-exotics-bet-type-pool-type.sql` so test deployments now match production. RaceWriter does NOT populate the columns (they're filled by a one-time SQL backfill from the parsed `name` column); spec at `docs/specs/handycapper-schema.md` updated to reflect that re-imports leave them NULL until backfill. Backfill logic itself is a separate concern, not covered here.
+
+**Severity:** LOW → FIXED.
 
 ### IMP-T5.9 — `breeding` table is winners-only by design (NOT a bug)
 
@@ -1138,7 +1140,7 @@ Regex `\d{1,3}\.\d{1,3}` rejects format `1:11.45`. QH races for longer distances
 
 **Severity:** HIGH (affects QH long-distance races)
 
-### CP-T6.5 — Fractional fewer-than-expected fallback ignores QUARTER_HORSE/MIXED breeds
+### CP-T6.5 — Fractional fewer-than-expected fallback ignores QUARTER_HORSE/MIXED breeds [FIXED 2026-05-28]
 
 **File:** `fractionals/FractionalService.java:67-90`
 
@@ -1146,9 +1148,11 @@ Fallback uses TB-baseline speed constants (0.045 / 0.0647). Breed-aware adjustme
 
 **Fix:** Add QH and MIXED-breed speed constants. Or document that breeds outside TB/AR are unsupported.
 
-**Severity:** MEDIUM (affects non-TB races; small fraction of dataset but contaminates them silently)
+**Fix applied 2026-05-28:** Took the documented option — `FractionalService.getFractionalPointsForDistance` now logs a WARN and skips the fallback for non-TB/non-AR breeds rather than silently using TB constants. Adding empirically-calibrated QH/MIXED constants is deferred until someone has the data to fit them. The skip is safer than wrong-bucket assignment.
 
-### CP-T6.6 — `feetBehind = lengths * 8.75` magic number
+**Severity:** MEDIUM (affects non-TB races; small fraction of dataset but contaminates them silently) → FIXED.
+
+### CP-T6.6 — `feetBehind = lengths * 8.75` magic number [FIXED 2026-05-28]
 
 **File:** `RaceResult.java:698`
 
@@ -1158,7 +1162,7 @@ Fallback uses TB-baseline speed constants (0.045 / 0.0647). Breed-aware adjustme
 
 **Severity:** MEDIUM
 
-### CP-T6.7 — `daysSince` uses `LocalDate.now()` instead of race date
+### CP-T6.7 — `daysSince` uses `LocalDate.now()` instead of race date [FIXED 2026-05-28]
 
 **File:** `running_line/LastRaced.java:96`
 
@@ -1168,7 +1172,7 @@ The 2-digit year reducer uses `LocalDate.now().minusYears(80)`. Parsing the same
 
 **Severity:** MEDIUM
 
-### CP-T6.8 — Owner regex has no end anchor
+### CP-T6.8 — Owner regex has no end anchor [FIXED 2026-05-28]
 
 **File:** `Owner.java:20`
 
@@ -1178,7 +1182,7 @@ The 2-digit year reducer uses `LocalDate.now().minusYears(80)`. Parsing the same
 
 **Severity:** LOW (separator format stable in practice)
 
-### CP-T6.9 — `isWinner()` uses `==` on boxed Integer
+### CP-T6.9 — `isWinner()` uses `==` on boxed Integer [FIXED 2026-05-28]
 
 **Files:** `Starter.java:623, 633`, `RaceResult.java:810`
 
@@ -1208,7 +1212,7 @@ Two test PDFs cover one TB raceday + one multi-page race. No QH-only, Arabian, w
 
 **Severity:** LOW (testing gap, not a runtime bug)
 
-### CP-T6.12 — `convertToCsv` swallows IO errors
+### CP-T6.12 — `convertToCsv` swallows IO errors [FIXED 2026-05-28]
 
 **File:** `ChartParser.java:134-136`
 
