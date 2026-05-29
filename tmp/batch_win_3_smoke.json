@@ -1,0 +1,49 @@
+{
+  "args": {
+    "n": 3,
+    "policy": "win",
+    "seed": "smoke",
+    "out": null
+  },
+  "agg": {
+    "n_days": 2,
+    "n_days_played": 0,
+    "n_bets": 0,
+    "n_hits": 0,
+    "hit_rate": null,
+    "invested": 0.0,
+    "returned": 0.0,
+    "pnl": 0.0,
+    "roi": null
+  },
+  "per_day": [
+    {
+      "track": "CT",
+      "date": "2007-05-10",
+      "policy": "win",
+      "n_races": 10,
+      "n_bets": 0,
+      "n_hits": 0,
+      "n_register_failures": 0,
+      "invested": 0.0,
+      "returned": 0.0,
+      "pnl": 0.0,
+      "roi": null,
+      "bets": []
+    },
+    {
+      "track": "TP",
+      "date": "2016-02-06",
+      "policy": "win",
+      "n_races": 10,
+      "n_bets": 0,
+      "n_hits": 0,
+      "n_register_failures": 0,
+      "invested": 0.0,
+      "returned": 0.0,
+      "pnl": 0.0,
+      "roi": null,
+      "bets": []
+    }
+  ]
+}

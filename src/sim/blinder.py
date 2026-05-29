@@ -241,171 +241,97 @@ WITH race_starters AS (
     JOIN handycapper.starters s ON s.race_id = r.id
     WHERE r.track = %(track)s AND r.date = %(race_date)s
 ),
--- Per-race overround for all races before this card.
--- Used to normalize raw 1/(odds+1) probabilities so they sum to 1.0 per race
--- (without normalization, the overround factor inflates expected_wins
--- proportionally to takeout, making population A/E ~0.80 instead of 1.0).
--- Materialized once and reused across all trainer-bias subqueries below.
-race_overround AS (
-    SELECT s.race_id,
-        SUM(1.0 / (s.odds + 1)) AS field_overround
-    FROM handycapper.starters s
-    JOIN handycapper.races r ON r.id = s.race_id
-    WHERE r.breed = 'TB'
-      AND r.date < %(race_date)s
-      AND r.number_of_runners >= 5
-      AND s.odds IS NOT NULL AND s.odds > 0
-    GROUP BY s.race_id
+-- Trainer × dimension keys for which we need the latest snapshot.
+-- Cross-product of today's trainers × 5 dimensions (~few hundred rows).
+trainer_dim_keys AS (
+    SELECT DISTINCT rs.trainer_last, rs.trainer_first, d.dimension
+    FROM race_starters rs
+    CROSS JOIN (VALUES ('fts'), ('claim'), ('drop'), ('layoff'), ('switch')) d(dimension)
 ),
--- Trainer FTS record (point-in-time). Joins to race_overround to normalize
--- expected_wins for field overround (raw 1/(odds+1) sums to ~1.17 with
--- takeout, biasing population A/E to ~0.80 instead of 1.0).
+-- For each (trainer, dimension), pull the single most-recent snapshot
+-- before race_date via LATERAL + LIMIT 1. Lookup is per-key — uses the
+-- composite (trainer_last, trainer_first, snapshot_date, dimension)
+-- index for an index-only descending walk that stops at the first row.
+trainer_ae_latest AS (
+    SELECT k.trainer_last, k.trainer_first, k.dimension,
+           snap.starts, snap.wins, snap.expected
+    FROM trainer_dim_keys k
+    LEFT JOIN LATERAL (
+        SELECT starts, wins, expected
+        FROM handycapper.rs_trainer_ae_daily snap
+        WHERE snap.trainer_last = k.trainer_last
+          AND snap.trainer_first = k.trainer_first
+          AND snap.dimension = k.dimension
+          AND snap.snapshot_date < %(race_date)s
+        ORDER BY snap.snapshot_date DESC
+        LIMIT 1
+    ) snap ON true
+),
 trainer_fts AS (
-    SELECT s.trainer_last, s.trainer_first,
-        COUNT(*) AS fts_starts,
-        SUM(CASE WHEN s.official_position = 1 THEN 1 ELSE 0 END) AS fts_wins,
-        SUM((1.0 / (s.odds + 1)) / NULLIF(ro.field_overround, 0)) AS fts_expected
-    FROM handycapper.starters s
-    JOIN handycapper.races r ON r.id = s.race_id
-    JOIN race_overround ro ON ro.race_id = s.race_id
-    WHERE s.last_raced_date IS NULL
-      AND POSITION('MAIDEN' IN r.type) > 0
-      AND r.breed = 'TB'
-      AND r.date < %(race_date)s
-      AND r.number_of_runners >= 5
-      AND s.odds IS NOT NULL AND s.odds > 0
-      AND (s.trainer_last, s.trainer_first) IN (
-          SELECT DISTINCT trainer_last, trainer_first FROM race_starters
-      )
-    GROUP BY s.trainer_last, s.trainer_first
+    SELECT trainer_last, trainer_first,
+           starts AS fts_starts, wins AS fts_wins, expected AS fts_expected
+    FROM trainer_ae_latest WHERE dimension = 'fts'
 ),
--- Trainer claim record (point-in-time). Overround-normalized.
 trainer_claim AS (
-    SELECT post.trainer_last, post.trainer_first,
-        COUNT(*) AS claim_starts,
-        SUM(CASE WHEN post.official_position = 1 THEN 1 ELSE 0 END) AS claim_wins,
-        SUM((1.0 / (post.odds + 1)) / NULLIF(ro.field_overround, 0)) AS claim_expected
-    FROM handycapper.starters claimed
-    JOIN handycapper.races cr ON cr.id = claimed.race_id
-    JOIN handycapper.starters post ON post.horse = claimed.horse
-    JOIN handycapper.races pr ON pr.id = post.race_id
-    JOIN race_overround ro ON ro.race_id = post.race_id
-    WHERE claimed.claimed = true
-      AND cr.breed = 'TB' AND cr.date < %(race_date)s
-      AND pr.date > cr.date AND pr.date <= cr.date + interval '180 days'
-      AND pr.date < %(race_date)s
-      AND pr.number_of_runners >= 5
-      AND post.odds IS NOT NULL AND post.odds > 0
-      AND (post.trainer_last, post.trainer_first) IN (
-          SELECT DISTINCT trainer_last, trainer_first FROM race_starters
-      )
-    GROUP BY post.trainer_last, post.trainer_first
+    SELECT trainer_last, trainer_first,
+           starts AS claim_starts, wins AS claim_wins, expected AS claim_expected
+    FROM trainer_ae_latest WHERE dimension = 'claim'
 ),
--- Trainer class drop record (point-in-time). Overround-normalized.
 trainer_drop AS (
-    SELECT sq.trainer_last, sq.trainer_first,
-        COUNT(*) AS drop_starts,
-        SUM(CASE WHEN sq.official_position = 1 THEN 1 ELSE 0 END) AS drop_wins,
-        SUM((1.0 / (sq.odds + 1)) / NULLIF(sq.field_overround, 0)) AS drop_expected
-    FROM (
-        SELECT s.trainer_last, s.trainer_first, s.official_position, s.odds, r.purse,
-            LAG(r.purse) OVER (PARTITION BY s.horse ORDER BY r.date) AS prev_purse,
-            ro.field_overround
-        FROM handycapper.starters s
-        JOIN handycapper.races r ON r.id = s.race_id
-        JOIN race_overround ro ON ro.race_id = s.race_id
-        WHERE r.breed = 'TB' AND r.date < %(race_date)s
-          AND r.number_of_runners >= 5
-          AND s.horse IS NOT NULL AND s.odds IS NOT NULL AND s.odds > 0
-          AND (s.trainer_last, s.trainer_first) IN (
-              SELECT DISTINCT trainer_last, trainer_first FROM race_starters
-          )
-    ) sq
-    WHERE sq.prev_purse IS NOT NULL AND sq.purse < sq.prev_purse * 0.7
-    GROUP BY sq.trainer_last, sq.trainer_first
+    SELECT trainer_last, trainer_first,
+           starts AS drop_starts, wins AS drop_wins, expected AS drop_expected
+    FROM trainer_ae_latest WHERE dimension = 'drop'
 ),
--- Trainer layoff record (point-in-time: 90+ days off). Overround-normalized.
 trainer_layoff AS (
-    SELECT s.trainer_last, s.trainer_first,
-        COUNT(*) AS layoff_starts,
-        SUM(CASE WHEN s.official_position = 1 THEN 1 ELSE 0 END) AS layoff_wins,
-        SUM((1.0 / (s.odds + 1)) / NULLIF(ro.field_overround, 0)) AS layoff_expected
-    FROM handycapper.starters s
-    JOIN handycapper.races r ON r.id = s.race_id
-    JOIN race_overround ro ON ro.race_id = s.race_id
-    WHERE r.breed = 'TB' AND r.date < %(race_date)s
-      AND r.number_of_runners >= 5
-      AND s.last_raced_date IS NOT NULL
-      AND (r.date - s.last_raced_date) >= 90
-      AND s.odds IS NOT NULL AND s.odds > 0
-      AND (s.trainer_last, s.trainer_first) IN (
-          SELECT DISTINCT trainer_last, trainer_first FROM race_starters
-      )
-    GROUP BY s.trainer_last, s.trainer_first
+    SELECT trainer_last, trainer_first,
+           starts AS layoff_starts, wins AS layoff_wins, expected AS layoff_expected
+    FROM trainer_ae_latest WHERE dimension = 'layoff'
 ),
--- Trainer surface switch record (point-in-time). Overround-normalized.
 trainer_switch AS (
-    SELECT sq.trainer_last, sq.trainer_first,
-        COUNT(*) AS switch_starts,
-        SUM(CASE WHEN sq.official_position = 1 THEN 1 ELSE 0 END) AS switch_wins,
-        SUM((1.0 / (sq.odds + 1)) / NULLIF(sq.field_overround, 0)) AS switch_expected
-    FROM (
-        SELECT s.trainer_last, s.trainer_first, s.official_position, s.odds, r.surface,
-            LAG(r.surface) OVER (PARTITION BY s.horse ORDER BY r.date) AS prev_surface,
-            ro.field_overround
-        FROM handycapper.starters s
-        JOIN handycapper.races r ON r.id = s.race_id
-        JOIN race_overround ro ON ro.race_id = s.race_id
-        WHERE r.breed = 'TB' AND r.date < %(race_date)s
-          AND r.number_of_runners >= 5
-          AND s.horse IS NOT NULL AND s.odds IS NOT NULL AND s.odds > 0
-          AND r.surface IN ('Dirt', 'Turf', 'Synthetic')
-          AND (s.trainer_last, s.trainer_first) IN (
-              SELECT DISTINCT trainer_last, trainer_first FROM race_starters
-          )
-    ) sq
-    WHERE sq.prev_surface IS NOT NULL AND sq.surface != sq.prev_surface
-    GROUP BY sq.trainer_last, sq.trainer_first
+    SELECT trainer_last, trainer_first,
+           starts AS switch_starts, wins AS switch_wins, expected AS switch_expected
+    FROM trainer_ae_latest WHERE dimension = 'switch'
 ),
--- Jockey career win rate (point-in-time, for upgrade/downgrade detection)
+-- Today's jockey keys only. The previous-jockey lookup (for
+-- upgrade/downgrade detection) gets its own LATERAL in the final
+-- SELECT, fed from prev_start.prev_jockey_*. Splitting this avoids
+-- a UNION-on-DISTINCT-on-full-starters-table that the planner can't
+-- push the snapshot_date filter through.
+jockey_keys_today AS (
+    SELECT DISTINCT jockey_last, jockey_first FROM race_starters
+),
 jockey_career AS (
-    SELECT s.jockey_last, s.jockey_first,
-        COUNT(*) AS career_starts,
-        SUM(CASE WHEN s.official_position = 1 THEN 1 ELSE 0 END)::float / COUNT(*) AS career_win_pct
-    FROM handycapper.starters s
-    JOIN handycapper.races r ON r.id = s.race_id
-    WHERE r.breed = 'TB' AND r.date < %(race_date)s
-      AND r.number_of_runners >= 5
-      AND (s.jockey_last, s.jockey_first) IN (
-          SELECT DISTINCT jockey_last, jockey_first FROM race_starters
-          UNION
-          SELECT DISTINCT prev_s.jockey_last, prev_s.jockey_first
-          FROM race_starters rs
-          JOIN handycapper.starters prev_s ON prev_s.horse = rs.horse AND prev_s.id != rs.starter_id
-          JOIN handycapper.races prev_r ON prev_r.id = prev_s.race_id AND prev_r.date < %(race_date)s
-      )
-    GROUP BY s.jockey_last, s.jockey_first
-    -- 20-start floor: balances statistical meaningfulness against apprentice
-    -- coverage (5lb-bug riders typically have low career counts). Was 50 —
-    -- empirical: 1,567 / 3,779 apprentices (41 pct) had >= 50 starts; lowering
-    -- to 20 captures 1,861 (49 pct) without much added noise. Below 20,
-    -- win-rate is dominated by 0-vs-1-win statistical jitter.
-    HAVING COUNT(*) >= 20
+    SELECT k.jockey_last, k.jockey_first, snap.career_starts, snap.career_win_pct
+    FROM jockey_keys_today k
+    LEFT JOIN LATERAL (
+        SELECT career_starts, career_win_pct
+        FROM handycapper.rs_jockey_career_daily snap
+        WHERE snap.jockey_last = k.jockey_last
+          AND snap.jockey_first = k.jockey_first
+          AND snap.snapshot_date < %(race_date)s
+        ORDER BY snap.snapshot_date DESC
+        LIMIT 1
+    ) snap ON true
+    WHERE snap.career_starts IS NOT NULL
 ),
--- Jockey trailing 12m at this track (point-in-time)
+-- Jockey trailing 12m at this track. Weekly snapshots are precomputed
+-- per (snapshot_week_start, track, jockey). For race date R, find the
+-- snapshot for the ISO-week containing R. The snapshot's window is
+-- [week_start - 365 days, week_start - 1 day], which approximates
+-- "trailing 12 months at this track as of this week." Slight stale
+-- bias: a Sunday race sees the prior Monday's snapshot, so up to 6
+-- days less recent than the inline CTE — acceptable for a 365-day
+-- rolling window.
 jockey_track AS (
-    SELECT s.jockey_last, s.jockey_first,
-        COUNT(*) AS jock_starts_12m,
-        SUM(CASE WHEN s.official_position = 1 THEN 1 ELSE 0 END) AS jock_wins_12m
-    FROM handycapper.starters s
-    JOIN handycapper.races r ON r.id = s.race_id
-    WHERE r.track = %(track)s
-      AND r.date BETWEEN (DATE %(race_date)s - interval '365 days') AND (DATE %(race_date)s - interval '1 day')
-      AND r.number_of_runners >= 5
-      AND (s.jockey_last, s.jockey_first) IN (
+    SELECT jt.jockey_last, jt.jockey_first,
+           jt.starts_12m AS jock_starts_12m,
+           jt.wins_12m   AS jock_wins_12m
+    FROM handycapper.rs_jockey_track_weekly jt
+    WHERE jt.snapshot_week_start = date_trunc('week', %(race_date)s::date)::date
+      AND jt.track = %(track)s
+      AND (jt.jockey_last, jt.jockey_first) IN (
           SELECT DISTINCT jockey_last, jockey_first FROM race_starters
       )
-    GROUP BY s.jockey_last, s.jockey_first
 ),
 -- Equipment: current race meds/equip
 current_meds AS (
@@ -423,20 +349,31 @@ current_equip AS (
     GROUP BY rs.starter_id
 ),
 -- Previous start info (for detecting changes)
+-- Per-starter most-recent prior race. Replaces the previous CTE that
+-- did Sort+DistinctON over a 15M-row sequential scan; LATERAL with
+-- LIMIT 1 lets the planner stop at the first prior start for each of
+-- today's horses (~88 horses × ~10 idx hits each, vs full table scan).
 prev_start AS (
-    SELECT DISTINCT ON (rs.starter_id)
-        rs.starter_id,
-        prev_s.id AS prev_starter_id,
-        prev_r.surface AS prev_surface,
-        prev_r.purse AS prev_purse,
-        prev_s.jockey_last AS prev_jockey_last,
-        prev_s.jockey_first AS prev_jockey_first,
-        prev_s.claimed AS was_claimed_last,
-        prev_r.date AS prev_race_date
+    SELECT rs.starter_id, ps.prev_starter_id, ps.prev_surface, ps.prev_purse,
+           ps.prev_jockey_last, ps.prev_jockey_first, ps.was_claimed_last,
+           ps.prev_race_date
     FROM race_starters rs
-    JOIN handycapper.starters prev_s ON prev_s.horse = rs.horse AND prev_s.id != rs.starter_id
-    JOIN handycapper.races prev_r ON prev_r.id = prev_s.race_id AND prev_r.date < %(race_date)s
-    ORDER BY rs.starter_id, prev_r.date DESC
+    LEFT JOIN LATERAL (
+        SELECT prev_s.id AS prev_starter_id,
+               prev_r.surface AS prev_surface,
+               prev_r.purse AS prev_purse,
+               prev_s.jockey_last AS prev_jockey_last,
+               prev_s.jockey_first AS prev_jockey_first,
+               prev_s.claimed AS was_claimed_last,
+               prev_r.date AS prev_race_date
+        FROM handycapper.starters prev_s
+        JOIN handycapper.races prev_r ON prev_r.id = prev_s.race_id
+        WHERE prev_s.horse = rs.horse
+          AND prev_s.id != rs.starter_id
+          AND prev_r.date < %(race_date)s
+        ORDER BY prev_r.date DESC
+        LIMIT 1
+    ) ps ON true
 ),
 prev_meds AS (
     SELECT ps.starter_id,
@@ -535,7 +472,16 @@ LEFT JOIN current_equip ce ON ce.starter_id = rs.starter_id
 LEFT JOIN prev_start ps ON ps.starter_id = rs.starter_id
 LEFT JOIN prev_meds pm ON pm.starter_id = rs.starter_id
 LEFT JOIN prev_equip pe ON pe.starter_id = rs.starter_id
-LEFT JOIN jockey_career jc_prev ON jc_prev.jockey_last = ps.prev_jockey_last AND jc_prev.jockey_first = ps.prev_jockey_first
+LEFT JOIN LATERAL (
+    SELECT career_win_pct
+    FROM handycapper.rs_jockey_career_daily snap
+    WHERE ps.prev_jockey_last IS NOT NULL
+      AND snap.jockey_last = ps.prev_jockey_last
+      AND snap.jockey_first = ps.prev_jockey_first
+      AND snap.snapshot_date < %(race_date)s
+    ORDER BY snap.snapshot_date DESC
+    LIMIT 1
+) jc_prev ON true
 ORDER BY rs.race_number, rs.starter_id
 """
 
