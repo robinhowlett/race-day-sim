@@ -159,15 +159,25 @@ class Bet:
         # Total: $24, with $3 effective on the 4 strong combos (1 + 2)
         # and $1 on the other 12. Press detection in register_bet surfaces
         # this as a [press note] when it fires.
+
+    Basket pattern (PROTO-T3.9): when a single strategic opinion is expressed
+    across multiple bets (e.g. WIN + EXACTA + TRIFECTA all keyed on #7), tag
+    each bet with the same `basket_id`. An aggregate-exposure note fires when
+    the cumulative basket stake gets thick relative to single-race exposure
+    (the over-investment trap). At evaluation time, P&L rolls up per basket
+    so retrospective questions like "did this strategic opinion clear?" are
+    answerable. Untagged bets behave exactly as before.
     """
     race: int
     bet_type: str  # WIN, EXACTA, TRIFECTA, PICK3, etc.
     programs: list  # program numbers involved
     amount: float
     rationale: str
+    basket_id: str | None = None
 
     def __str__(self):
-        return f"R{self.race} {self.bet_type} {_format_programs(self.programs)} ${self.amount:.2f} — {self.rationale}"
+        suffix = f" [{self.basket_id}]" if self.basket_id else ""
+        return f"R{self.race} {self.bet_type} {_format_programs(self.programs)} ${self.amount:.2f} — {self.rationale}{suffix}"
 
 
 @dataclass
@@ -1042,6 +1052,43 @@ class SimDay:
             return [{str(p)} for p in programs]
         return [{str(p) for p in pos} for pos in programs]
 
+    def _basket_exposure_notes(self, basket_id: str | None, race: int,
+                                bet_type: str, programs, amount: float) -> list[str]:
+        """PROTO-T3.9 (basket): surface cumulative exposure when multiple bets
+        share the same `basket_id`.
+
+        A basket is one strategic opinion expressed across multiple bets
+        (WIN + EXACTA + TRIFECTA on same key, or multi-race horizontal that
+        the bettor wants to track as one play). Without aggregation, the
+        per-bet display hides the over-investment trap of registering 5
+        small bets on a +3-edge conviction. This note quantifies the trap.
+
+        Fires only when basket_id is provided and at least one prior bet
+        already carries the same basket_id. Reports total stake, race count,
+        and bet-type mix across the basket.
+        """
+        if not basket_id:
+            return []
+        prior = [b for b in self.bets if b.basket_id == basket_id]
+        if not prior:
+            return []
+        prior_total = sum(b.amount for b in prior)
+        new_total = prior_total + amount
+        races = sorted({b.race for b in prior} | {race})
+        type_counts: dict[str, int] = {}
+        for b in prior:
+            type_counts[b.bet_type] = type_counts.get(b.bet_type, 0) + 1
+        type_counts[bet_type] = type_counts.get(bet_type, 0) + 1
+        type_str = ", ".join(f"{n}× {t}" for t, n in sorted(type_counts.items()))
+        race_str = ",".join(f"R{r}" for r in races)
+        return [
+            f"basket '{basket_id}' now {len(prior) + 1} bets "
+            f"({type_str}) across {race_str}; cumulative stake "
+            f"${new_total:.2f} (this bet ${amount:.2f} + prior ${prior_total:.2f}). "
+            f"Verify the cumulative stake matches conviction strength — "
+            f"multiple small bets on one opinion can compound into thick exposure."
+        ]
+
     def _press_notes(self, race: int, bet_type: str, programs, amount: float) -> list[str]:
         """PROTO-T3.4: detect press patterns across multiple Bets on the same
         (race, bet_type).
@@ -1402,7 +1449,7 @@ class SimDay:
         return warnings
 
     def register_bet(self, race: int, bet_type: str, programs, amount: float, rationale: str,
-                     *, force: bool = False):
+                     *, force: bool = False, basket_id: str | None = None):
         """Register a bet with explicit program numbers.
 
         Validates structure deterministically (programs in race, bet type whitelist,
@@ -1410,6 +1457,11 @@ class SimDay:
         Also runs the equity test (simulation-protocol.md Step E.4) as a soft
         check — prints warnings for selections that lose equity, but registers
         the bet anyway. Use force=True to silence equity warnings entirely.
+
+        `basket_id` (optional) tags this bet as part of a named strategic
+        opinion. When set, an aggregate-exposure note fires once a second bet
+        joins the basket, and reveal_and_evaluate prints per-basket P&L
+        rollups. Untagged bets behave exactly as before.
         """
         if not force:
             self._validate_bet(race, bet_type, programs, amount)
@@ -1425,12 +1477,13 @@ class SimDay:
                 ("note",    "hurdle",     self._hurdle_notes(race, bet_type, programs)),
                 ("note",    "kill-shot",  self._kill_shot_notes(race, bet_type, programs)),
                 ("note",    "press",      self._press_notes(race, bet_type, programs, amount)),
+                ("note",    "basket",     self._basket_exposure_notes(basket_id, race, bet_type, programs, amount)),
             ]
             for kind, tag, msgs in checks:
                 for m in msgs:
                     print(f"  [{tag} {kind}] R{race} {bet_type}: {m}")
         bet = Bet(race=race, bet_type=bet_type, programs=programs,
-                  amount=amount, rationale=rationale)
+                  amount=amount, rationale=rationale, basket_id=basket_id)
         self.bets.append(bet)
         return bet
 
@@ -1530,6 +1583,27 @@ class SimDay:
                     reason = breakdown.get("reason", "")
                     reason_str = f"  ({reason})" if reason and reason != "lost" else ""
                     print(f"       ✗ MISS: {bet.bet_type} {_format_programs(bet.programs)} ${bet.amount:.2f}{reason_str}")
+
+        baskets: dict[str, dict] = {}
+        for bet in self.bets:
+            if not bet.basket_id:
+                continue
+            hit, payout, _ = self._evaluate_bet(bet, race_data)
+            entry = baskets.setdefault(bet.basket_id, {"invested": 0.0, "returned": 0.0, "hits": 0, "n": 0})
+            entry["invested"] += bet.amount
+            entry["returned"] += payout if hit else 0.0
+            entry["hits"]     += 1 if hit else 0
+            entry["n"]        += 1
+
+        if baskets:
+            print(f"\n  {'-' * 40}")
+            print("  BASKET ROLLUPS")
+            for bid, e in sorted(baskets.items()):
+                pnl = e["returned"] - e["invested"]
+                roi = ((e["returned"] / e["invested"]) - 1) * 100 if e["invested"] > 0 else 0.0
+                print(f"    {bid}: {e['hits']}/{e['n']} hits, "
+                      f"${e['invested']:.2f} in, ${e['returned']:.2f} out, "
+                      f"P&L ${pnl:+.2f} (ROI {roi:+.1f}%)")
 
         print(f"\n  {'=' * 40}")
         print(f"  Total invested: ${total_invested:.2f}")
@@ -1810,6 +1884,9 @@ def main():
     print("  sim.register_bet(race, bet_type, programs, amount, rationale)")
     print("  e.g. sim.register_bet(2, 'WIN', ['7'], 10, 'STRONG specific #7')")
     print("       sim.register_bet(3, 'TRIFECTA', [['1'],['2','5'],['2','5']], 4, 'key/AB/AB')")
+    print("  optional basket_id= tags multi-bet strategic plays for aggregate P&L:")
+    print("       sim.register_bet(2, 'WIN', ['7'], 10, 'key', basket_id='r2-key-7')")
+    print("       sim.register_bet(2, 'EXACTA', [['7'],['1','2']], 4, 'cover', basket_id='r2-key-7')")
     print("-" * 60)
 
     conn.close()

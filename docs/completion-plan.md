@@ -25,11 +25,12 @@ These are code-fixes-shipped that need a long-running compute job to materialize
 
 | ID | Question |
 |---|---|
-| PROTO-T3.4 | Press mechanic — code multi-cost combos (`Bet.combinations` with per-combo multipliers and a `Basket` class) or keep as judgment guidance? |
-| PROTO-T3.7 | Two scaffolds (`run_simulation.py` vs `simulate_race_day.py`) — consolidate or keep both? |
-| PROTO-T3.9 | ITP concepts — kill_shot done (empirically validated, encoded); hurdle done (per-leg strategy classification + structural-fit notes); basket and win-only DEFERRED (need DB-backed analysis: choice-rank FLB curve and pace-conditional speed-and-fade outcome distribution). |
+| PROTO-T3.9 | win-only encoding — DEFERRED (needs multi-dim DB validation: pace × distance × surface × age before encoding). |
 
-**Recommendation:** Single-session conversation covering all three. They share a common axis: "what belongs in code vs in the bettor's head?" Likely outcomes: T3.4 → code press support; T3.7 → consolidate to `run_simulation.py`; T3.9 → encode `kill_shot` as a structural validation, leave the others as guidance.
+Resolved 2026-05-28:
+- T3.4 (press) — closed earlier via decomposition pattern + `_press_notes()`.
+- T3.7 (scaffolds) — closed earlier via consolidation; `simulate_race_day.py` deleted.
+- T3.9 basket — closed via "tag, don't wrap" (Cat-B decision): optional `basket_id` field on `Bet`, aggregate-exposure note + per-basket P&L rollup. Full `Basket` class no longer planned.
 
 ### Category C — Substantive new finding (highest priority, unaddressed)
 

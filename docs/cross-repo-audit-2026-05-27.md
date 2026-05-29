@@ -603,7 +603,7 @@ For the spec's 3/1 horse in 3×2×2: spec = 1.33, code = 1.33. For the spec's 6/
 - Wide spread `TRIFECTA 7/1,2,3,4/1,2,3,4 ($16)` followed by narrow press `TRIFECTA 7/1,2/1,2 ($8)` → press note fires reporting "narrow 4 combos at $2/combo + wide 16 combos at $1/combo; total stake $24. Effective cost on the narrow combos: $3/combo."
 - False-positive checks pass: different bet_type, different race, or non-subset programs all produce no note.
 
-**Deferred:** `Basket` class wrapping multiple Bets with shared rationale and unified analytics. Captured as a future enhancement when press becomes more common in real sim runs OR when we want analytics over "did my press strategy beat my flat strategy" type questions.
+**Basket tagging (added 2026-05-28):** Per Cat-B decision, opted for "tag, don't wrap" instead of a full `Basket` class. `Bet` gained an optional `basket_id: str | None = None` field; `register_bet` accepts a matching kwarg. When ≥2 bets share a `basket_id`, `_basket_exposure_notes` fires reporting cumulative stake, bet-type mix, and race coverage so the bettor sees the over-investment trap before adding more. `reveal_and_evaluate` prints per-basket P&L rollups when any bets are tagged. Untagged bets behave exactly as before. ~50 LOC; no breaking changes. A full `Basket` class is no longer planned — tagging covers both the press-vs-flat retrospective question and the T3.9 aggregate-exposure detection.
 
 **Severity:** HIGH → FIXED (informational detection; press structure preserved via decomposition).
 
@@ -741,9 +741,9 @@ Notes interact cleanly with downstream soft checks: a STRONG_NEGATIVE recommenda
 
 **Win-only (deferred to Sprint 3):** Codable as decay-rate + speed-fade-profile flag, BUT requires multi-dimensional empirical validation across (pace_scenario × distance_zone × surface × age_class) before encoding. Pace alone isn't sufficient — a SPEED_AND_FADE horse can wire in LONE_SPEED, fade in CONTESTED. Needs DB-backed analysis.
 
-**Basket (added 2026-05-28):** Different concept from press (T3.4). Basket = one strategic opinion expressed across multiple pool types (WIN + EXACTA + TRIFECTA all keyed on same horse). Press = same total stake weighted across combos within one bet. Basket detection deferred — needs aggregate-exposure-vs-conviction-EV analysis to catch the over-investment trap (registering 5 bets on +3-edge conviction). ~30 min when prioritized.
+**Basket (added 2026-05-28; tagging implemented):** Different concept from press (T3.4). Basket = one strategic opinion expressed across multiple pool types (WIN + EXACTA + TRIFECTA all keyed on same horse). Press = same total stake weighted across combos within one bet. Implemented via the optional `basket_id` tag on `Bet` / `register_bet` (see T3.4 for the cross-cutting design call). The aggregate-exposure note fires once a second bet joins the basket and reports cumulative stake + bet-type mix; `reveal_and_evaluate` prints per-basket P&L rollups. Catches the over-investment trap of registering 5 small bets on a +3-edge conviction.
 
-**Severity:** MEDIUM → PARTIALLY FIXED. Kill-shot encoded; hurdle encoded; win-only deferred for empirical validation; basket deferred for aggregate-EV analysis.
+**Severity:** MEDIUM → PARTIALLY FIXED. Kill-shot encoded; hurdle encoded; basket tagging encoded (Cat-B 2026-05-28); win-only deferred for empirical validation.
 
 ### PROTO-T3.10 — FTS rule contradiction across docs
 
