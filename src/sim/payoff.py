@@ -119,6 +119,94 @@ def project_trifecta_payoff(
     return math.exp(log_payoff)
 
 
+def project_superfecta_payoff(
+    winner_odds: float,
+    second_odds: float,
+    third_odds: float,
+    fourth_odds: float,
+    pool_size: float,
+    field_size: int,
+    hhi: float,
+    fav_choice: int,
+    fav_position: int | None,
+) -> float | None:
+    """Project expected superfecta payoff per $1.
+
+    Mirrors project_trifecta_payoff with the 4th-place horse's odds and a
+    `fav_fourth` flag. Coefficients fitted via Ridge (R²(test)≈0.79 on
+    595K rows from the WA refit that resolved the wagering_position-1-3
+    limitation by joining starters.official_position for position 4).
+
+    Args:
+        winner_odds, second_odds, third_odds, fourth_odds: closing odds
+            of projected finishers
+        pool_size: superfecta pool size
+        field_size: number of starters
+        hhi: Herfindahl index
+        fav_choice: choice rank of favorite (always 1 in our usage)
+        fav_position: where fav appears (1=won, 2=second, 3=third,
+            4=fourth, None=excluded)
+    """
+    models = _load_coefficients()
+    if "SUPERFECTA" not in models:
+        return None
+
+    c = models["SUPERFECTA"]["coefficients"]
+    log_payoff = (
+        c["const"]
+        + c["log_odds_1"] * math.log(max(winner_odds, 0.1) + 1)
+        + c["log_odds_2"] * math.log(max(second_odds, 0.1) + 1)
+        + c["log_odds_3"] * math.log(max(third_odds, 0.1) + 1)
+        + c["log_odds_4"] * math.log(max(fourth_odds, 0.1) + 1)
+        + c["log_pool"] * math.log(max(pool_size, 1))
+        + c["field_size"] * field_size
+        + c["hhi"] * hhi
+        + c["fav_in_combo"] * (1 if fav_position in (1, 2, 3, 4) else 0)
+        + c["fav_won"] * (1 if fav_position == 1 else 0)
+        + c["fav_second"] * (1 if fav_position == 2 else 0)
+        + c["fav_third"] * (1 if fav_position == 3 else 0)
+        + c["fav_fourth"] * (1 if fav_position == 4 else 0)
+        + c.get("log_odds1_x_fav_second", 0) * (
+            math.log(max(winner_odds, 0.1) + 1) if fav_position == 2 else 0
+        )
+        + c.get("log_odds1_x_fav_third", 0) * (
+            math.log(max(winner_odds, 0.1) + 1) if fav_position == 3 else 0
+        )
+    )
+    return math.exp(log_payoff)
+
+
+def _project_horizontal_payoff(
+    bet_type: str,
+    n_legs: int,
+    leg_winner_odds: list[float],
+    pool_size: float,
+    avg_hhi: float,
+    avg_field_size: float,
+    bad_fav_legs: int,
+) -> float | None:
+    """Shared projection for horizontal exotics (PICK_3, PICK_4, ...).
+
+    All horizontal coefficient sets share the same feature shape:
+    const + log_odds_leg{1..N} + log_pool + avg_hhi + avg_field_size +
+    bad_fav_legs. Only the bet_type and N differ.
+    """
+    models = _load_coefficients()
+    if bet_type not in models:
+        return None
+    if len(leg_winner_odds) != n_legs:
+        return None
+
+    c = models[bet_type]["coefficients"]
+    log_payoff = c["const"] + c["log_pool"] * math.log(max(pool_size, 1))
+    for i in range(n_legs):
+        log_payoff += c[f"log_odds_leg{i+1}"] * math.log(max(leg_winner_odds[i], 0.1) + 1)
+    log_payoff += c["avg_hhi"] * avg_hhi
+    log_payoff += c["avg_field_size"] * avg_field_size
+    log_payoff += c["bad_fav_legs"] * bad_fav_legs
+    return math.exp(log_payoff)
+
+
 def project_pick3_payoff(
     leg_winner_odds: list[float],
     pool_size: float,
@@ -135,24 +223,28 @@ def project_pick3_payoff(
         avg_field_size: average field size across legs
         bad_fav_legs: number of legs where the favorite is projected to lose
     """
-    models = _load_coefficients()
-    if "PICK_3" not in models:
-        return None
-    if len(leg_winner_odds) != 3:
-        return None
-
-    c = models["PICK_3"]["coefficients"]
-    log_payoff = (
-        c["const"]
-        + c["log_odds_leg1"] * math.log(max(leg_winner_odds[0], 0.1) + 1)
-        + c["log_odds_leg2"] * math.log(max(leg_winner_odds[1], 0.1) + 1)
-        + c["log_odds_leg3"] * math.log(max(leg_winner_odds[2], 0.1) + 1)
-        + c["log_pool"] * math.log(max(pool_size, 1))
-        + c["avg_hhi"] * avg_hhi
-        + c["avg_field_size"] * avg_field_size
-        + c["bad_fav_legs"] * bad_fav_legs
+    return _project_horizontal_payoff(
+        "PICK_3", 3, leg_winner_odds, pool_size, avg_hhi, avg_field_size, bad_fav_legs,
     )
-    return math.exp(log_payoff)
+
+
+def project_pick4_payoff(
+    leg_winner_odds: list[float],
+    pool_size: float,
+    avg_hhi: float,
+    avg_field_size: float,
+    bad_fav_legs: int,
+) -> float | None:
+    """Project expected Pick 4 payoff per $1.
+
+    Same feature shape as Pick 3 with 4 legs. R²(test)≈0.56 on 110K
+    historical Pick 4 results — meaningfully weaker than Pick 3's 0.68
+    because Pick 4 pools are smaller and tail variance is wider, but
+    still usable for overlay-driven combo selection.
+    """
+    return _project_horizontal_payoff(
+        "PICK_4", 4, leg_winner_odds, pool_size, avg_hhi, avg_field_size, bad_fav_legs,
+    )
 
 
 def compute_overlay(
