@@ -968,7 +968,7 @@ Doesn't list `rkm`, `wagering-analytics`, `race-day-sim` — the three repos doi
 
 pdf-importer drives `chart-parser` (a private library) and writes to the `handycapper` schema. Three HIGH-severity findings affect downstream data quality.
 
-### IMP-T5.1 — `upsertRace` only updates 6 of 50+ columns on conflict
+### IMP-T5.1 — `upsertRace` only updates 6 of 50+ columns on conflict [FIXED 2026-05-28]
 
 **File:** `pdf-importer/src/main/java/.../pipeline/RaceWriter.java:154-166`
 
@@ -980,7 +980,16 @@ The `doUpdate()` clause sets only `track_name, final_time, final_millis, dead_he
 
 **Fix:** Either (a) expand `doUpdate()` to set every column with `EXCLUDED.col` for each field, or (b) change strategy to delete-and-reinsert per race_id (matching how starters are handled). Option (b) is simpler and matches existing pattern.
 
-**Severity:** HIGH
+**Fix applied 2026-05-28 (option b):** `writeRace` now does `deleteRace(...)` then a fresh insert. The race-level FK CASCADE clears all child tables (starters and grandchildren, scratches, fractionals, splits, exotics, ratings) so the explicit per-table delete block is no longer needed and was removed.
+
+Discussion that shaped the choice:
+- The `ImportTracker` SQLite progress log already prevents incidental re-imports — `PdfScanner` filters out anything marked SUCCESS/UNIMPORTABLE before parsing. So a re-import is always intentional (fresh tracker DB or explicit re-run after a chart-parser bug fix), which means full replace is the right semantic.
+- The downstream `rkm_*` FKs use `ON DELETE NO ACTION`. If RKM analytics have already been computed for this race, the delete will FK-block loudly. That's the correct signal: silently overwriting values RKM has aggregated against would leave derived analytics stale; the FK error forces an explicit recomputation decision.
+- An earlier proposal to keep `doUpdate` and just expand to all non-key columns was rejected because it would silently break RKM consistency in exactly the case the FK constraint exists to protect against.
+
+New integration test `write_ReimportPropagatesChangedNonKeyColumn` exercises 6 different non-key columns (`surface`, `conditions`, `track_record_holder`, `post_time`, `weather`, `age_code`) — all of which would have stayed stale under the old 6-column doUpdate. 13/13 pdf-importer tests pass.
+
+**Severity:** HIGH → FIXED.
 
 ### IMP-T5.2 — `cancelled` and `races` rows can co-exist for the same (date, track, number) [FIXED 2026-05-28]
 
