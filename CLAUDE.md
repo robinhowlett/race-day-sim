@@ -43,7 +43,7 @@ Follow `docs/simulation-protocol.md` and `docs/wagering-framework.md`:
 |---|---|
 | `blinder.py` | Information firewall — pre-race card + pool sizes + market bias signals + post-race reveal |
 | `ratings.py` | Confidence-weighted ratings: physics (curves) blended with prior (class + bias). Computes Rating, Market, Edge with ±band. Separates RATED/UNRATED tiers. |
-| `probability.py` | Benter logit (α=1.89), Stern-Harville (k=0.81), model probs from curves |
+| `probability.py` | Benter logit (α=1.89), Stern-Harville (k=0.86), model probs from curves |
 | `pace.py` | Prospective pace prediction from field v0/decay distribution |
 | `payoff.py` | Projects expected exotic payoffs using OLS models from wagering-analytics |
 | `horizontal.py` | Per-leg equity assessment for Pick 3/4/5/6 |
@@ -109,7 +109,7 @@ recommended dropping the static table; that recommendation now stands.
 In `probability.py` and `kelly.py`:
 - `ALPHA = 1.89` (Benter model weight — from rkm Phase 4 logit fit)
 - `BETA = 1.0` (odds weight)
-- `STERN_K = 0.81` (empirically calibrated from wagering-analytics AN1)
+- `STERN_K = 0.86` (empirically calibrated from wagering-analytics AN1; was 0.81 until WA-T1.1 grid-search recalibration on 2026-05-27)
 - `TEMPERATURE = 1000.0` (softmax temperature in ms; was 6500 — too flat, fixed 2026-05-27 via RDS-T1.1)
 - `KELLY_FRACTION = 0.25` (quarter-Kelly)
 - `MAX_EXPOSURE = 0.05` (5% of bankroll per race)

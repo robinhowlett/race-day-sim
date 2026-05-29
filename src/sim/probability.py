@@ -42,19 +42,29 @@ def odds_to_probs(odds: list[float]) -> np.ndarray:
     return raw / raw.sum()
 
 
-def stern_transform(p: np.ndarray, k: float = 0.81) -> np.ndarray:
+# Stern exponent. Calibrated 0.81 → 0.86 in wagering-analytics
+# (audit WA-T1.1, 2026-05-27) via grid search on top-3 ordering
+# log-likelihood across 80,042 clean races. wagering-analytics's
+# populate_stern_fair.py uses 0.86; this default was harmonized
+# 2026-05-29 to match. The numerical impact on per-combo
+# probability is small (~1-2%) but cross-repo consistency
+# matters for results to agree.
+STERN_K = 0.86
+
+
+def stern_transform(p: np.ndarray, k: float = STERN_K) -> np.ndarray:
     """Stern power transformation of win probabilities."""
     p_k = np.power(np.clip(p, 1e-10, 1), k)
     return p_k / p_k.sum()
 
 
-def harville_ordered_prob(p: np.ndarray, positions: list[int], k: float = 0.81) -> float:
+def harville_ordered_prob(p: np.ndarray, positions: list[int], k: float = STERN_K) -> float:
     """Probability of horses finishing in exact order using Stern-corrected Harville.
 
     Args:
         p: win probability vector (original, not Stern-transformed)
         positions: indices (0-based) in order, e.g. [2, 0, 4] means horse 3 wins, horse 1 2nd, horse 5 3rd
-        k: Stern exponent (0.81 = empirically calibrated)
+        k: Stern exponent (default STERN_K=0.86 — empirically calibrated)
     """
     remaining = np.ones(len(p), dtype=bool)
     prob = 1.0
