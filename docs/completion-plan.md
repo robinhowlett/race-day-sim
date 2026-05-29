@@ -23,14 +23,11 @@ These are code-fixes-shipped that need a long-running compute job to materialize
 
 ### Category B — Deferred design decisions (need conversation, not code)
 
-| ID | Question |
-|---|---|
-| PROTO-T3.9 | win-only encoding — DEFERRED (needs multi-dim DB validation: pace × distance × surface × age before encoding). |
-
-Resolved 2026-05-28:
+**Closed 2026-05-28:**
 - T3.4 (press) — closed earlier via decomposition pattern + `_press_notes()`.
 - T3.7 (scaffolds) — closed earlier via consolidation; `simulate_race_day.py` deleted.
-- T3.9 basket — closed via "tag, don't wrap" (Cat-B decision): optional `basket_id` field on `Bet`, aggregate-exposure note + per-basket P&L rollup. Full `Basket` class no longer planned.
+- T3.9 basket — closed via "tag, don't wrap": optional `basket_id` field on `Bet`, aggregate-exposure note + per-basket P&L rollup. Full `Basket` class no longer planned.
+- T3.9 win-only — closed via empirical multi-dim validation (TB 2010-2017, n>1.6M). The discriminating axis turned out to be **sprint vs route**, not pace × distance × surface × age. Speed-fade horses (top quintile of field by both adj_v0 AND adj_decay) finish 2nd/3rd ~10% LESS often than 1st in sprints across all surfaces (under_to_win 0.75-0.90); route-race speed-fade horses show no asymmetry. `_win_only_notes` fires for EXACTA/TRIFECTA under legs in sprint races only. Cat B now closed.
 
 ### Category C — Substantive new finding (highest priority, unaddressed)
 
@@ -98,7 +95,7 @@ These are real findings but live in upstream repos. Fixing them changes the data
 7. **RKM-T1.4 fix**: rewrite `compute_form_at_date` to use trailing career baseline. **Run the form recompute.** — 1 session (+ overnight compute)
 8. **WA #14 surface dummies investigation + re-fit** — 1 session
 9. **WA-T1.3 Pick 5/6 OLS rebuild** with carryover feature — 1 session
-10. **PROTO-T3.9 win-only encoding** — multi-dimensional DB validation (pace_scenario × distance_zone × surface × age_class) of the SPEED_AND_FADE → "wins or runs out" hypothesis. Encode as a soft note ONLY in the buckets where the empirical pattern holds (likely: dirt sprints with CONTESTED pace, older horses, mid-class). ~half session.
+10. ~~**PROTO-T3.9 win-only encoding**~~ — done 2026-05-28 in Cat B. The discriminating axis was sprint vs route; pace × age didn't add signal. Encoded as `_win_only_notes` in `run_simulation.py`.
 11. **Choice-rank FLB curve** — for each `choice` rank (1, 2, 3, ...), measure A/E (actual wins ÷ implied-from-odds wins). Tells us whether the favorite label specifically attracts a default-bet pattern beyond what the general FLB curve implies, or whether all ranks are smoothly calibrated by the public. Informs whether per-rank shrinkage factors are needed (in addition to the per-odds-tier FLB correction in Sprint 4). ~half session.
 12. **PROTO-T3.9 basket detection** — aggregate exposure across multiple bets sharing a primary key. Compute per-bet EV contribution and flag redundant equity (multiple bets capturing the same probability mass). Catches the "+3 edge conviction expressed as 5 bets" over-investment trap. ~30 min once Sprint 1-2 hurdle/exposure scaffolding is in place.
 

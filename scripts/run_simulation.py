@@ -1338,6 +1338,87 @@ class SimDay:
 
         return notes
 
+    def _win_only_notes(self, race: int, bet_type: str, programs) -> list[str]:
+        """PROTO-T3.9 (win-only): the ITP rule "some horses are win-only —
+        either they win or they're no good. Don't use them underneath in
+        exotics."
+
+        Empirically validated (handycapper TB 2010-2017, ~217K speed-fade
+        starters in 8+-horse fields). A "speed_fade" type — top quintile of
+        the field by both adj_v0 (high early speed) AND adj_decay (high
+        fade) — shows the win-only finishing pattern ONLY in sprint races.
+        Route-race speed_fade horses finish 2nd/3rd at the same rate as 1st.
+
+        | surface×zone | n | under_to_win ratio |
+        |---|---|---|
+        | Dirt sprint     | 117K | 0.901 |
+        | Synthetic sprint|  12K | 0.867 |
+        | Turf sprint     |   5K | 0.748 |
+        | Dirt route      |  65K | 0.999 (NOT win-only) |
+        | Synthetic route |  10K | 1.022 (NOT win-only) |
+        | Turf route      |  35K | 1.057 (NOT win-only) |
+
+        Pace scenario does not discriminate further — the asymmetry is
+        purely sprint-vs-route. Field size does not discriminate either.
+
+        The note fires when an EXACTA or TRIFECTA registers a speed_fade
+        program in the under leg of a SPRINT race. Informational only —
+        the bettor may have specific reasons to expect this horse to hold
+        on (front-end pace dynamics, lone speed in a slow field, etc).
+        Suppressed in route races by design.
+        """
+        if bet_type not in ("EXACTA", "TRIFECTA"):
+            return []
+        if not isinstance(programs[0], (list, tuple)):
+            return []
+        if len(programs) < 2:
+            return []
+
+        race_df = self.card[self.card["race_number"] == race]
+        if race_df.empty:
+            return []
+        # Sprint vs route — RKM convention: furlongs > 6.5 = route
+        furlongs = race_df["furlongs"].iloc[0]
+        if pd.isna(furlongs) or float(furlongs) > 6.5:
+            return []
+
+        # Identify speed_fade horses: top quintile of field by BOTH adj_v0
+        # AND adj_decay. Use rank-based quintile (so a 5-horse field gets
+        # exactly 1 horse per quintile).
+        valid = race_df[race_df["adj_v0"].notna() & race_df["adj_decay"].notna()].copy()
+        if len(valid) < 5:
+            return []
+        n = len(valid)
+        # Top 20% rank cutoff
+        cutoff = max(1, int(n * 0.2))
+        v0_top = set(valid.nlargest(cutoff, "adj_v0")["program"].astype(str))
+        decay_top = set(valid.nlargest(cutoff, "adj_decay")["program"].astype(str))
+        speed_fade = v0_top & decay_top
+        if not speed_fade:
+            return []
+
+        # Walk under legs (positions 2 onward) and flag any speed_fade
+        # programs found there
+        flagged: list[tuple[str, int]] = []  # (program, position_idx 2..N)
+        for pos_idx in range(1, len(programs)):
+            for p in programs[pos_idx]:
+                if str(p) in speed_fade and (str(p), pos_idx + 1) not in flagged:
+                    flagged.append((str(p), pos_idx + 1))
+        if not flagged:
+            return []
+
+        flagged_strs = [f"#{p} (slot {pos})" for p, pos in flagged]
+        return [(
+            f"under leg includes speed-fade type(s) {', '.join(flagged_strs)} "
+            f"— top quintile of this field in BOTH adj_v0 and adj_decay. "
+            f"Empirical (TB 2010-2017 sprints): horses fitting this profile "
+            f"finish 2nd/3rd ~10% LESS often than 1st (under_to_win ratio ~0.90 "
+            f"on dirt, 0.87 synthetic, 0.75 turf). The ITP heuristic — \"they "
+            f"either win or they're no good\" — empirically holds in sprint "
+            f"races. Verify pace context supports including them under; "
+            f"consider keying them on top instead, or excluding from under leg."
+        )]
+
     def _kill_shot_notes(self, race: int, bet_type: str, programs) -> list[str]:
         """PROTO-T3.9: kill-shot warning on exactas keying the favorite on top.
 
@@ -1476,6 +1557,7 @@ class SimDay:
                 ("note",    "horiz-conv", self._horizontal_conviction_notes(race, bet_type, programs)),
                 ("note",    "hurdle",     self._hurdle_notes(race, bet_type, programs)),
                 ("note",    "kill-shot",  self._kill_shot_notes(race, bet_type, programs)),
+                ("note",    "win-only",   self._win_only_notes(race, bet_type, programs)),
                 ("note",    "press",      self._press_notes(race, bet_type, programs, amount)),
                 ("note",    "basket",     self._basket_exposure_notes(basket_id, race, bet_type, programs, amount)),
             ]

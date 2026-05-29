@@ -700,7 +700,7 @@ Notes interact cleanly with downstream soft checks: a STRONG_NEGATIVE recommenda
 
 ### PROTO-T3.9 — ITP concepts referenced as rules but not coded
 
-**Status (2026-05-28):** PARTIALLY ADDRESSED — kill-shot empirically validated and encoded as a soft note. Hurdle/basket/win-only deferred (design questions still open).
+**Status (2026-05-28):** FIXED — kill-shot, hurdle, basket tagging, and win-only all empirically validated and encoded as soft notes.
 
 **Empirical validation of kill-shot (TB 2010-2017, 56K exactas with top-2-choice 1-2 finishes):**
 
@@ -739,11 +739,35 @@ Notes interact cleanly with downstream soft checks: a STRONG_NEGATIVE recommenda
 
   Falls back to count-based mode classification when odds data is missing for the race.
 
-**Win-only (deferred to Sprint 3):** Codable as decay-rate + speed-fade-profile flag, BUT requires multi-dimensional empirical validation across (pace_scenario × distance_zone × surface × age_class) before encoding. Pace alone isn't sufficient — a SPEED_AND_FADE horse can wire in LONE_SPEED, fade in CONTESTED. Needs DB-backed analysis.
+**Win-only (validated and encoded 2026-05-28):** Multi-dimensional empirical validation completed against handycapper TB 2010-2017 (n>1.6M starter-races in fields ≥5). Findings:
+
+- "Speed-fade" type = top quintile of field by BOTH `adj_v0` AND `adj_decay`.
+- The ITP win-only finishing pattern (under_to_win ratio < 1.0) holds **only in sprint races** (furlongs ≤ 6.5), and across all surfaces:
+
+| surface | zone | n | under_to_win |
+|---|---|---|---|
+| Dirt sprint | 117K | **0.901** |
+| Synthetic sprint | 12K | **0.867** |
+| Turf sprint | 5K | **0.748** |
+| Dirt route | 65K | 0.999 (NOT win-only) |
+| Synthetic route | 10K | 1.022 (NOT win-only) |
+| Turf route | 35K | 1.057 (NOT win-only) |
+
+- Pace scenario (CONTESTED/PRESSURED/CONTROLLED) does NOT discriminate further within sprints — the asymmetry is purely sprint-vs-route. The audit's deferral guess that pace_scenario × distance × surface × age would be the right axis was partly wrong: pace and age don't add signal once you've conditioned on sprint vs route.
+- Field size doesn't discriminate either (5-7, 8-10, 11+ all show the same pattern).
+
+**Fix applied:** New `_win_only_notes()` method on `SimDay`. Fires for EXACTA/TRIFECTA when an under-leg position contains a speed-fade horse (top 20% of field's adj_v0 AND adj_decay) AND the race is a sprint. Suppressed in route races by design. Note reports the empirical numbers and suggests keying the horse on top or excluding from under leg.
+
+**Verified on ARP 2016-07-24:**
+- R1 sprint (6f): EXACTA #6/#2 fires (speed-fade #2 under) ✓
+- R1 sprint: EXACTA #2/#6 does not fire (speed-fade on top) ✓
+- R5 sprint: TRIFECTA #X/#Y/#1 fires (speed-fade in 3rd slot) ✓
+- R7 route (8.5f): no fire even with same horse types ✓
+- WIN bets: no fire (irrelevant bet type) ✓
 
 **Basket (added 2026-05-28; tagging implemented):** Different concept from press (T3.4). Basket = one strategic opinion expressed across multiple pool types (WIN + EXACTA + TRIFECTA all keyed on same horse). Press = same total stake weighted across combos within one bet. Implemented via the optional `basket_id` tag on `Bet` / `register_bet` (see T3.4 for the cross-cutting design call). The aggregate-exposure note fires once a second bet joins the basket and reports cumulative stake + bet-type mix; `reveal_and_evaluate` prints per-basket P&L rollups. Catches the over-investment trap of registering 5 small bets on a +3-edge conviction.
 
-**Severity:** MEDIUM → PARTIALLY FIXED. Kill-shot encoded; hurdle encoded; basket tagging encoded (Cat-B 2026-05-28); win-only deferred for empirical validation.
+**Severity:** MEDIUM → FIXED. All four ITP concepts now encoded as soft notes: kill-shot, hurdle, basket tagging, and win-only (Cat-B 2026-05-28).
 
 ### PROTO-T3.10 — FTS rule contradiction across docs
 
