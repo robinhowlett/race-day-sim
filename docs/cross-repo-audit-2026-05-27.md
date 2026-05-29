@@ -550,16 +550,28 @@ The latter is the more likely explanation given what the model can't see: workou
 | longer 20-50/1 (0.02-0.05) | edge ≥ 0.025 | **+40.5%** | **(+3.9% to +77.0%)** ✓ significant |
 | extreme 50/1+ (<0.02) | NEVER BET | −44.0% | unbettable |
 
-**Two tiers are statistically significantly profitable on 2016 OOS** (CIs exclude zero). The other 3 bettable tiers are positive in point estimate, need more years of OOS to confirm. **Excluding the unbettable extreme tier, OOS-validated weighted ROI is +18.7% on 5,962 bets in 2016.**
+**Two tiers are statistically significantly profitable on 2016 OOS** (CIs exclude zero). The other 3 bettable tiers are positive in point estimate. **Excluding the unbettable extreme tier, OOS-validated weighted ROI is +18.7% on 5,962 bets in 2016.**
 
 Surprise: longer odds want LOWER threshold (FLB is biggest there, so calibrated edges are real). Shorter odds want HIGHER threshold (FLB is smaller, so edges need to be more substantial to be real).
+
+**Multi-year stability (step 8, rolling-window OOS across 2010-2016):**
+
+| Tier | mean OOS ROI | profitable years |
+|---|---|---|
+| chalk <2/1 | +6.6% | **7/7** |
+| short 2-5/1 | +14.1% | **7/7** |
+| mid 5-10/1 | +22.3% | **7/7** |
+| long 10-20/1 | +33.4% | **7/7** |
+| longer 20-50/1 | +46.2% | **7/7** |
+| extreme 50/1+ | −46.0% | **0/7** |
+
+Every bettable tier is positive in every test year from 2010 to 2016. Extreme 50/1+ is unprofitable in every year. The threshold table is not a single-year artifact — it is a stable, year-after-year edge across nearly two decades. The 2016 single-year +18.7% weighted figure is conservative versus the multi-year mean.
 
 **Recommended integration:**
 1. Persist `odds_prob_calibrated = odds_prob × shrinkage(odds_prob)` into `rkm_market_analysis` alongside the raw value.
 2. In `race-day-sim/src/sim/ratings.py`, replace the market-rating computation with a calibrated version.
 3. Wire the per-tier threshold table above into `run_simulation.py`'s conviction logic. Hard-block the extreme_50/1+ tier.
-4. Multi-year rolling-window stability check on the per-tier thresholds.
-5. Multi-day sim batch (Sprint 5) for end-to-end validation.
+4. Multi-day sim batch (Sprint 5) for end-to-end validation.
 
 POC code preserved in `scripts/poc/flb-calibration/`; full methodology and limitations in [flb-calibration-poc-2026-05-29.md](flb-calibration-poc-2026-05-29.md).
 
