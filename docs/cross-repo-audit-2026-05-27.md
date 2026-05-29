@@ -1107,7 +1107,7 @@ The bug was latent because all existing test fixtures used 3-digit earned amount
 
 **Severity:** MEDIUM (rare, but produces silent scratch losses) → FIXED.
 
-### IMP-T5.7 — Trainer/jockey suffix handling
+### IMP-T5.7 — Trainer/jockey suffix handling [DEFERRED 2026-05-28]
 
 **File:** `chart-parser/.../Trainer.java:77-94`
 
@@ -1117,7 +1117,20 @@ PDF format is "Last, First". For "Smith, John Jr." the suffix lands in firstName
 
 **Fix:** Post-process trainer/jockey first names to strip and re-attach known suffixes to last name. Or: introduce a separate `trainer_suffix` column. Or: build an alias mapping table for known same-person variants.
 
-**Severity:** MEDIUM
+**Status (2026-05-28):** DEFERRED. Empirical investigation against the live DB revised both the audit's diagnosis and its severity:
+
+1. **The audit's directional claim was wrong.** The chart format embeds the suffix in `trainer_last` (as `"Plesa, Jr."`), not `trainer_first`. The greedy `(.+),( (.+))?` regex captures everything up to the LAST comma into lastName, leaving only the actual first name in firstName.
+2. **The "two distinct entities" failure mode is bounded.** ~224 trainer (last_bare, first) collisions across the entire dataset where the same person appears with and without the suffix — real but a small fraction of the trainer population. ~55 jockey collisions. Mostly the same individual; sometimes different father/son pairs that share an initial.
+3. **The "merge real father/son" failure mode is the bigger risk.** Confirmed cases include Plesa Edward Sr. vs Edward Jr., Cormier Donald Sr. vs Jr. vs III, Hess Robert Sr. vs Jr., Tammaro John Sr. vs III vs IV, etc. — these are genuinely different trainers identified only by the suffix. Naively stripping the suffix would silently merge them.
+
+So the right fix is the schema-column approach (separate `trainer_suffix`, `jockey_suffix`, `new_trainer_suffix`), which preserves the disambiguation while letting downstream code group by `(bare_last, first)` when appropriate. That's a multi-layer change:
+- chart-parser: strip suffix from `lastName` during parse, expose `getSuffix()` on `Trainer`/`Jockey`. Requires a chart-parser release bump.
+- pdf-importer: schema migration for the new columns; `RaceWriter` populates them.
+- downstream: queries can opt into either grouping.
+
+Total work ~1 hour but spans three layers. Deferred because: (a) real impact is bounded relative to the spend, (b) the downstream consumers most affected (trainer A/E aggregation) have other open issues that should be addressed together (WA #11/#13 coupled entries, WA #14 surface dummies, WA #16 jock_upgrade), and (c) any caller that needs to dedupe today can do so in SQL via `split_part(trainer_last, ',', 1)` — the existing data is salvageable without schema change.
+
+**Severity:** MEDIUM (data-quality cleanliness, bounded blast radius) → DEFERRED. Reopen when trainer A/E work warrants it.
 
 ### IMP-T5.8 — Schema spec lists `exotics.bet_type` and `exotics.pool_type` columns that don't exist [FIXED 2026-05-28]
 
