@@ -12,17 +12,37 @@
 
 These directly cause inflated edges, future-data leakage, or incorrect probability computation. Likely responsible for the bulk of the 0/15 record.
 
-### RKM-T1.1 — Cross-track normalization is structurally inert  **[PARTIALLY DISPROVEN — 2026-05-27]**
+### RKM-T1.1 — Cross-track normalization is structurally inert  **[CONFIRMED + DEFERRED — 2026-05-29]**
 
-**VERIFICATION RESULT (2026-05-27):** The audit's claim that the offsets are inert is WRONG. `rkm_track_offsets` has 104 rows (one per track) with a healthy distribution: range -2.80 to +1.28, std=0.83, with 59 tracks in the moderate (0.50-1.50) bucket and 20 in the large (1.50-3.00) bucket. Reference track is BEL (offset = 0.00 by design). 96.6% of `rkm_velocity_curves` rows have `adj_v0 ≠ v0`, average adjustment +0.87 ft/s. Confidence values vary (1.00 for high-shipping tracks down to <0.10 for thin ones).
+**FINAL DISPOSITION (2026-05-29):** Investigation complete. Architectural concern is real; rebuild deferred because it doesn't differentiate on the metric we actually care about.
 
-**What the audit got right:** `rkm_velocity_curves` has NO `track` column — curves ARE aggregated per (horse, surface, distance_zone). The "shipping horse pairs" approach as literally described in the spec cannot be the implementation.
+**What's actually wrong (confirmed via code trace + POC):**
 
-**What the audit got wrong:** The system DOES produce sensible offsets via some other path (possibly the orphaned `compute_group_priors` mentioned in audit RKM #10, or the simpler track-mean approach at lines 130-138). The track normalization is functional, not inert.
+1. The current `compute_track_offsets()` in `rkm/src/rkm/adjustments.py` returns an empty DataFrame when run against the current `rkm_velocity_curves` schema. The shipping-pairs algorithm requires per-(horse, surface, track) v0 to compute pairwise differences for the same horse at different tracks; the schema only stores per-(horse, surface, distance_zone) v0. After all the script's filters and self-join, the resulting `pairs` dataframe is empty.
 
-**Statistical validity remains an open question.** Whether the offsets correctly capture track speed differences (vs being confounded with horse-quality bias, per RKM #12 — top barns shipping good horses to flagship tracks) requires a deeper read of the actual code path, which the audit did via code review only.
+2. **The live `rkm_track_offsets` table is populated and applied to every row in `rkm_velocity_curves`** — but the values were NOT produced by the current code. They came from some prior code path (or manual SQL) that doesn't exist in the repo. If anyone ran `compute_adjustments.py` today it would TRUNCATE and re-insert nothing, destroying the live offsets.
 
-**Updated severity:** Downgrade from HIGH to "investigation-needed" — the system isn't broken in the way the audit claimed, but its statistical correctness vs the original spec is unverified.
+3. **The live offsets are wrong-direction on at least the NYRA tracks.** Empirical mean ft/s on fast dirt 2014 is BEL=55.31 > SAR=55.10 > AQU=54.14, but `rkm_track_offsets.v0_offset` (sign-flipped to "track is faster") gives AQU=+0.72 > SAR=+0.54 > BEL=0.00. POC model recovered the correct ordering. So horses primary-running AQU have inflated `adj_v0`; BEL horses have no adjustment when they should have a downward one.
+
+4. **Within-race ranking is not affected by the inverted track offsets**, because every horse in a single race shares the track. The bug only manifests for cross-track rating comparisons.
+
+**Why we're deferring rather than fixing:**
+
+The hierarchical-model POC ([hierarchical-ability-poc-2026-05-29.md](hierarchical-ability-poc-2026-05-29.md)) demonstrated that:
+
+- A canonical-anchored mixed-effects model recovers correct track-effect direction, correct context coefficients, correct top-horse rankings (Game On Dude, Shared Belief, California Chrome at top of SoCal 2010-2016; Frosted, Tonalist, American Pharoah at top of NYRA 2010-2016).
+- But on within-race winner prediction, the live pipeline beats the POC by 1.5-3.5pp consistently across slices (NYRA 2014 single-year, NYRA 2010-2016 → 2017, SoCal 2010-2016 → 2017).
+- The gap **widens** with longer training windows and more shipper-stable circuits — opposite of what an "architectural cleanness wins" hypothesis predicts.
+
+The reason: within-race ranking can't benefit from clean track-effect, condition-effect, or class-effect separation because all horses in a race share those values — they cancel out in ranking. The architectural concerns matter for **cross-context comparisons** (research questions, cross-circuit shippers, class-projection) which aren't on race-day-sim's wagering critical path.
+
+**Recommended actions (none done in this session):**
+
+1. **Add an integrity tripwire** to `compute_adjustments.py` that aborts if `compute_track_offsets()` returns empty — prevents accidental destruction of the currently-applied (if directionally-wrong) offsets. ~30 min. Marked as future small-fix.
+2. **Document in rkm CLAUDE.md** that `adj_v0` is "track-adjusted only, not fully context-stripped" — the name implies broader cleansing than has actually happened. Could rename to `peak_speed_track_adj` for honesty, but rename touches three downstream repos and is deferred.
+3. **Hold the rebuild as a future option** — the POC code in `race-day-sim/scripts/poc/hierarchical-ability/` is the starting point if/when a use case requires cross-context comparable ability.
+
+**Severity reclassified:** HIGH → DEFERRED. The architectural critique is empirically sound but not differentiating for wagering ROI on within-race ranking. RDS-T2.x FLB calibration is the higher-leverage move.
 
 ---
 

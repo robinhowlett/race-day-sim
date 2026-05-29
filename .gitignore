@@ -1,3 +1,6 @@
 .venv/
 __pycache__/
 *.pyc
+
+# POC tmp outputs (extracted DB data, pickled fits, large CSVs)
+scripts/poc/*/tmp/
