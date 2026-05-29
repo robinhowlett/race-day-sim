@@ -539,11 +539,27 @@ The latter is the more likely explanation given what the model can't see: workou
 
 - **Subgroup analysis:** field size matters meaningfully for the deepest longshot tier — small-field 50/1+ shrinkage 0.49 vs large-field 0.75. Surface and class effects modest. A field-size-aware longshot-bucket adjustment is a future enhancement; a global curve is adequate for production integration.
 
-**Recommended integration (per the POC's writeup):**
+**Empirically tuned + OOS-validated per-tier threshold table** (steps 6 and 7 of the POC; 3-way split: 1997-2014 calibration / 2015 threshold tune / 2016 true OOS):
+
+| Tier | Threshold | OOS ROI (2016) | OOS 95% CI |
+|---|---|---|---|
+| chalk <2/1 (≥0.40) | edge ≥ 0.125 | +4.9% | (−4.7% to +14.6%) |
+| short 2-5/1 (0.20-0.40) | edge ≥ 0.20 | +16.7% | (−5.5% to +38.8%) |
+| mid 5-10/1 (0.10-0.20) | edge ≥ 0.10 | +12.2% | (−2.3% to +26.6%) |
+| long 10-20/1 (0.05-0.10) | edge ≥ 0.025 | **+17.2%** | **(+6.6% to +27.9%)** ✓ significant |
+| longer 20-50/1 (0.02-0.05) | edge ≥ 0.025 | **+40.5%** | **(+3.9% to +77.0%)** ✓ significant |
+| extreme 50/1+ (<0.02) | NEVER BET | −44.0% | unbettable |
+
+**Two tiers are statistically significantly profitable on 2016 OOS** (CIs exclude zero). The other 3 bettable tiers are positive in point estimate, need more years of OOS to confirm. **Excluding the unbettable extreme tier, OOS-validated weighted ROI is +18.7% on 5,962 bets in 2016.**
+
+Surprise: longer odds want LOWER threshold (FLB is biggest there, so calibrated edges are real). Shorter odds want HIGHER threshold (FLB is smaller, so edges need to be more substantial to be real).
+
+**Recommended integration:**
 1. Persist `odds_prob_calibrated = odds_prob × shrinkage(odds_prob)` into `rkm_market_analysis` alongside the raw value.
 2. In `race-day-sim/src/sim/ratings.py`, replace the market-rating computation with a calibrated version.
-3. Add an odds-tier minimum-edge threshold table (rough starting point: 0.05 for chalk → 0.15 for 20/1+ → 0.20+ with explicit rationale for 50/1+).
-4. Re-validate via multi-day sim batch (Sprint 5).
+3. Wire the per-tier threshold table above into `run_simulation.py`'s conviction logic. Hard-block the extreme_50/1+ tier.
+4. Multi-year rolling-window stability check on the per-tier thresholds.
+5. Multi-day sim batch (Sprint 5) for end-to-end validation.
 
 POC code preserved in `scripts/poc/flb-calibration/`; full methodology and limitations in [flb-calibration-poc-2026-05-29.md](flb-calibration-poc-2026-05-29.md).
 

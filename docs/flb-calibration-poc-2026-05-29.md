@@ -115,14 +115,25 @@ Small fields have substantially harsher longshot bias — a 30/1 in a 5-horse fi
 
 1. **FLB shrinkage curve** as a function `flb_calibrate(odds_prob: float, field_size: int = None) -> float` that returns the calibrated probability. The fitted JSON in `scripts/poc/flb-calibration/tmp/flb_calibration_holdout.json` is a starting point.
 
-2. **Odds-tier-aware minimum edge threshold** that increases with odds:
-   - Chalk (odds_prob ≥ 0.20, ~4/1 or shorter): require model_edge > 0.05
-   - Mid-tier (0.10 ≤ odds_prob < 0.20, ~5-10/1): require model_edge > 0.075
-   - Long-mid (0.05 ≤ odds_prob < 0.10, ~10-20/1): require model_edge > 0.10
-   - Long (odds_prob < 0.05, 20/1+): require model_edge > 0.15
-   - Extreme (odds_prob < 0.02, 50/1+): bet only with very high conviction (≥0.20 edge) and an explicit handicapping rationale
+2. **Odds-tier-aware minimum edge threshold** — empirically tuned on 2015 and validated OOS on 2016 (steps 6 and 7 of the POC). The result INVERTS my initial guess: longer odds → LOWER threshold (FLB is biggest there, edges are real), shorter odds → HIGHER threshold (FLB is smaller, edges need to be larger to be real).
 
-   Numbers above are rough — should be tuned via further holdout-based ROI sweep.
+   | Tier | odds_prob range | Threshold | Tune ROI | OOS ROI | OOS 95% CI |
+   |---|---|---|---|---|---|
+   | chalk <2/1 | ≥ 0.40 | edge ≥ 0.125 | +1.5% | +4.9% | (−4.7% to +14.6%) |
+   | short 2-5/1 | 0.20-0.40 | edge ≥ 0.20 | +22.7% | +16.7% | (−5.5% to +38.8%) |
+   | mid 5-10/1 | 0.10-0.20 | edge ≥ 0.10 | +28.2% | +12.2% | (−2.3% to +26.6%) |
+   | long 10-20/1 | 0.05-0.10 | edge ≥ 0.025 | +27.6% | **+17.2%** | **(+6.6% to +27.9%)** ✓ |
+   | longer 20-50/1 | 0.02-0.05 | edge ≥ 0.025 | +31.2% | **+40.5%** | **(+3.9% to +77.0%)** ✓ |
+   | extreme 50/1+ | < 0.02 | NEVER BET | −48.7% | −44.0% | unbettable at any threshold |
+
+   **Two tiers are statistically significantly profitable on true OOS** (long 10-20/1 and longer 20-50/1) — confidence intervals exclude zero. The other 3 bettable tiers are positive in point estimate but CIs cross zero on a single year of OOS data — promising but not yet conclusive.
+
+   Three-way split methodology to avoid threshold-overfitting:
+   - **Calibration train (1997-2014):** fit FLB shrinkage curve.
+   - **Threshold tune (2015 only):** grid search per-tier optimal edge threshold.
+   - **True OOS (2016 only):** score the tuned thresholds. OOS ROI is lower than tune ROI in 4/5 tiers (overfitting bias evidence), but still positive in all 5 bettable tiers.
+
+   **Excluding the unbettable extreme_50/1+ tier, the OOS-validated weighted ROI is +18.7% on 5,962 bets in 2016.**
 
 ### Where to integrate
 
@@ -149,32 +160,50 @@ Small fields have substantially harsher longshot bias — a 30/1 in a 5-horse fi
 
 ## Next steps
 
-1. **Tune the odds-tier threshold table** via a finer ROI sweep — the 0.05/0.075/0.10/0.15 numbers above are based on this POC's coarse comparison and should be optimized over a wider grid.
+1. **Apply FLB at race-day-sim's `ratings.py` layer** rather than at `compute_market.py` to avoid the combined_prob double-correction concern. The integration would replace the current `odds_to_rating()` market-rating computation with a calibrated version.
 
-2. **Apply FLB at race-day-sim's `ratings.py` layer** rather than at `compute_market.py` to avoid the combined_prob double-correction concern. The integration would replace the current `odds_to_rating()` market-rating computation with a calibrated version.
+2. **Wire the per-tier threshold table into the conviction-pick logic** in `run_simulation.py`. Replace `MIN_EDGE_CONVICTION_MARGIN > 0` with the per-tier table from this POC. Hard-block the extreme_50/1+ tier — no FLB-edge threshold makes it profitable.
 
-3. **Re-validate after integration** — implementing FLB and odds-tier thresholds together is a structural change to the conviction-pick pipeline; it should pass a multi-day sim batch (Sprint 5 in the completion plan) before being declared done.
+3. **Multi-year validation** — the 2016 OOS result is one year. Run the same three-way-split methodology on rolling windows (e.g., train 1997-2013 → tune 2014 → validate 2015; train 1997-2014 → tune 2015 → validate 2016) to check that the per-tier thresholds are stable across years. If they wander significantly, the tuning is overfit to one year's market microstructure.
 
-4. **Field-size-aware shrinkage** for the longshot extreme — only worth doing if multi-day sim shows meaningful action in small-field 50/1+ bets, which (per the ROI numbers above) probably won't be many. Defer until evidence justifies.
+4. **Multi-day sim batch (Sprint 5)** — implement FLB + per-tier thresholds together, run 50+ days through `run_simulation.py`, track P&L. Validates the integration end-to-end including bet-sizing (Kelly) and exotic-bet construction.
+
+5. **Field-size-aware shrinkage** for the longshot extreme — defer until evidence from (4) shows meaningful action in small-field longshots.
 
 ## Files
 
+Step scripts (all under `scripts/poc/flb-calibration/`):
 - `01_empirical_curve.py` — full-data 50-bucket FLB curve
 - `02_fit_smooth.py` — isotonic fit with chalk anchor
 - `03_validate.py` — train/holdout calibration + log-loss/Brier
-- `04_roi_impact.py` — ROI comparison across strategies and odds tiers
+- `04_roi_impact.py` — coarse ROI comparison across strategies
 - `05_subgroups.py` — field-size / surface / class divergence
-- `tmp/flb_curve.csv` — bucketed empirical curve
-- `tmp/flb_calibration.json` — full-data shrinkage lookup (200-point grid)
-- `tmp/flb_calibration_holdout.json` — train-only fit, with holdout metrics
-- `tmp/validation_metrics.json` — log-loss, Brier, per-bucket calibration
-- `tmp/validation_calibration.csv` — calibration plot data
-- `tmp/roi_comparison.csv` — strategy-by-strategy ROI
-- `tmp/roi_metrics.json` — same as JSON
-- `tmp/subgroup_curves.csv` — coarse curves per subgroup
+- `06_threshold_grid.py` — per-tier ROI grid sweep (in-sample tuning)
+- `07_threshold_oos_validation.py` — three-way-split OOS validation
+
+Artifacts (`tmp/`, gitignored):
+- `flb_curve.csv` — bucketed empirical curve
+- `flb_calibration.json` — full-data shrinkage lookup (200-point grid)
+- `flb_calibration_holdout.json` — train-only fit, with holdout metrics
+- `validation_metrics.json` — log-loss, Brier, per-bucket calibration
+- `validation_calibration.csv` — calibration plot data
+- `roi_comparison.csv` — strategy-by-strategy ROI
+- `roi_metrics.json` — same as JSON
+- `subgroup_curves.csv` — coarse curves per subgroup
+- `threshold_grid.csv` — per-tier × per-threshold ROI sweep
+- `threshold_grid_optimal.json` — optimal threshold per tier (in-sample)
+- `threshold_oos.csv` — out-of-sample validation per tier
+- `threshold_oos.json` — full payload of tuned + validated thresholds
 
 ## Bottom line
 
-**FLB calibration delivers real ROI lift (~2-3pp at the +5%/+10% edge thresholds, ~40% relative improvement) when paired with odds-tier-aware minimum-edge requirements.** It is destructive without that pairing.
+**FLB calibration paired with per-tier minimum-edge thresholds delivers significantly positive ROI on true out-of-sample validation:**
 
-The audit's RDS-T2.x option-1 (calibration) and option-2 (tier threshold) need to be implemented TOGETHER, not as alternatives.
+- Two tiers (long 10-20/1, longer 20-50/1) are **statistically significantly profitable** on 2016 OOS — CIs exclude zero.
+- Three other tiers (chalk, short, mid) are positive in point estimate; need more years of OOS to confirm.
+- Extreme 50/1+ is unbettable at any threshold.
+- **Excluding the unbettable extreme tier, OOS-validated weighted ROI is +18.7% on 5,962 bets in 2016.**
+
+The audit's RDS-T2.x options 1 (calibration) and 2 (tier threshold) must be implemented TOGETHER. Naive FLB without the threshold makes ROI WORSE than baseline by expanding the longshot bet set into the unprofitable territory.
+
+**Next concrete action: prototype the integration in `compute_market.py` + `ratings.py` + `run_simulation.py`, then run a multi-day sim batch.**
