@@ -36,59 +36,69 @@ This was the methodology bug that confounded our initial step-3 results. Using t
 
 ### Sample sizes (2010-2016, 7 years)
 
-| Bet type | Combos evaluated | Filter-passing combos (ER≥1.0, combined) |
+| Bet type | Distinct races / pools | Total combos evaluated |
 |---|---|---|
-| EXACTA | ~13M | ~1.4M |
-| TRIFECTA | ~870M | ~7.5M |
-| PICK_3 | ~700M | ~14M |
+| EXACTA | 162K | ~13M |
+| TRIFECTA | 162K | ~870M |
+| SUPERFECTA | 162K | ~5B |
+| PICK_3 | 133K | ~700M |
+| PICK_4 | 40K | ~1B |
 
 ## Headline results — 7-year per-year stability
 
-All numbers are pure model contribution (combined ROI − odds-only ROI), per year.
+Each bet type at ER ≥ 1.30. **Combined ROI** is what you'd realize betting $1 on every combo passing the filter using rkm's Benter-blended `combined_prob`. **Odds-only ROI** is the same procedure using overround-normalized public odds — the structural component anyone betting that pool gets without skill. **Pure model edge** = combined − odds-only, the actionable per-pp lift the model produces.
 
-### EXACTA (combined-prob model edge above odds-only baseline)
+### EXACTA — ER ≥ 1.30
 
-| ER thr | 2010 | 2011 | 2012 | 2013 | 2014 | 2015 | 2016 | mean |
+| 2010 | 2011 | 2012 | 2013 | 2014 | 2015 | 2016 | mean | +yrs |
 |---|---|---|---|---|---|---|---|---|
-| 1.00 | +42.2 | +43.4 | +41.4 | +39.5 | +40.0 | +39.8 | +28.3 | **+39.2pp** |
-| 1.10 | +41.7 | +47.9 | +38.2 | +43.5 | +44.5 | +41.1 | +29.7 | **+40.9pp** |
-| 1.30 | +48.5 | +32.4 | +51.7 | +58.7 | +36.1 | +35.5 | +25.8 | **+41.2pp** |
+| +22.2% | +36.0% | +36.5% | +46.2% | +20.4% | +29.5% | +22.8% | **+30.5%** | **7/7** |
 
-**Combined ROI** at ER ≥ 1.30: +27.8% mean across 7/7 years. **Odds-only baseline** at the same threshold: −13.5% (close to vertical-pool double-takeout).
+Odds-only at same threshold: **−12.0%** (vertical-pool double-takeout). Pure model contribution: **+42.5pp**.
 
-**Reading:** EXACTA's odds-only result is at takeout, as theory predicts. The combined model adds +35-45pp of pure skill above takeout, stably across 7 years.
+### TRIFECTA — ER ≥ 1.30
 
-### TRIFECTA (combined-prob model edge above odds-only baseline)
-
-| ER thr | 2010 | 2011 | 2012 | 2013 | 2014 | 2015 | 2016 | mean |
+| 2010 | 2011 | 2012 | 2013 | 2014 | 2015 | 2016 | mean | +yrs |
 |---|---|---|---|---|---|---|---|---|
-| 1.00 | +31.0 | +38.0 | +38.3 | +35.7 | +34.7 | +34.5 | +23.0 | **+33.6pp** |
-| 1.10 | +39.4 | +39.0 | +43.6 | +33.6 | +45.7 | +43.7 | +24.0 | **+38.4pp** |
-| 1.30 | +49.9 | +39.6 | +55.3 | +40.3 | +50.8 | +41.4 | +32.6 | **+44.3pp** |
+| +46.3% | +24.1% | +30.9% | +26.3% | +19.0% | +22.7% | +25.1% | **+27.8%** | **7/7** |
 
-**Combined ROI** at ER ≥ 1.30: +25.9% mean, 7/7 years. **Odds-only baseline:** −18.4%.
+Odds-only: **−13.4%**. Pure model contribution: **+41.2pp**.
 
-**Reading:** Same pattern as EXACTA. Pure model contribution +35-50pp consistently across years.
+### SUPERFECTA — ER ≥ 1.30
 
-### PICK_3 (combined-prob model edge above odds-only baseline)
-
-| ER thr | 2010 | 2011 | 2012 | 2013 | 2014 | 2015 | 2016 | mean |
+| 2010 | 2011 | 2012 | 2013 | 2014 | 2015 | 2016 | mean | +yrs |
 |---|---|---|---|---|---|---|---|---|
-| 1.00 | +70.7 | +77.6 | +35.2 | +53.6 | +64.4 | +50.2 | +45.1 | **+56.7pp** |
-| 1.10 | +67.3 | +99.3 | -0.9 | +66.5 | +48.2 | +16.3 | +1.3 | **+42.6pp** |
-| 1.30 | +28.9 | +87.3 | +20.2 | +16.2 | +61.2 | +5.6 | +69.0 | **+41.2pp** |
+| +43.0% | +58.2% | +60.3% | +54.1% | +62.5% | +45.3% | +32.6% | **+50.9%** | **7/7** |
 
-**Combined ROI** at ER ≥ 1.30: +82.1% mean, 7/7 years. **Odds-only baseline:** +47.7% across 5/6 years (2016 had insufficient surviving combos at this threshold).
+Odds-only: **+9.0%** — slightly positive, not at takeout. Deeper combinatorics let the OLS payoff projection capture more structural overlay even before model skill enters. Pure model contribution: **+41.9pp**.
 
-**Reading:** PICK_3 has TWO compounding effects:
-1. **Structural takeout-stacking advantage** (+47.7% in odds-only) — single-leg-takeout on the parlay pool dominates the triple-leg-takeout of a manual WIN parlay. Anyone betting Pick 3 captures this; it's not novel skill.
-2. **Pure model edge** (+34-57pp on top) — comparable to the verticals.
+### PICK_3 — ER ≥ 1.30
 
-The structural piece is well-documented in horse racing literature. What the POC adds is the demonstration that the model contributes meaningful skill beyond it.
+| 2010 | 2011 | 2012 | 2013 | 2014 | 2015 | 2016 | mean | +yrs |
+|---|---|---|---|---|---|---|---|---|
+| +61.0% | +110.9% | +124.0% | +75.3% | +62.6% | +89.9% | +68.7% | **+84.6%** | **7/7** |
 
-## Why model contribution is consistent (~30-50pp) across bet types
+Odds-only: **+52.8%** (6 years; 2016 had insufficient surviving combos for stable estimate). PICK_3 has two compounding effects:
+1. **Structural takeout-stacking advantage** (+52.8% in odds-only) — single-leg-takeout on the parlay pool dominates the triple-leg-takeout of a manual WIN parlay. Anyone betting Pick 3 captures this; it's not novel skill.
+2. **Pure model edge** (+31.8pp on top) — comparable to the verticals.
 
-The Benter blend in `combined_prob` is a single-race per-horse improvement. The exotic structures translate that per-horse improvement into per-combo selection. Across all three bet types, the combined model identifies combos where the per-horse probabilities the public expressed (via odds) systematically diverge from the model's blend — and the OLS-projected payoff correctly anticipates the resulting price. Bigger structural variance (deeper exotics) doesn't amplify or diminish the per-pp model contribution.
+### PICK_4 — ER ≥ 1.30
+
+| 2010 | 2011 | 2012 | 2013 | 2014 | 2015 | 2016 | mean | +yrs |
+|---|---|---|---|---|---|---|---|---|
+| +77.5% | +98.5% | +97.8% | +97.0% | +86.0% | +98.4% | +73.2% | **+89.8%** | **7/7** |
+
+Odds-only: **−1.6%** — close to takeout floor. PICK_4 doesn't free-ride on takeout-stacking the way PICK_3 does. **Pure model contribution: +91.4pp** — the highest of any bet type, more than 2× the verticals' +41-42pp. Plausible explanation: PICK_4 pools are smaller and less efficient than other pools, leaving more room for an informed model to find combos the public has mispriced. Worth investigating in a follow-up.
+
+## Pattern across bet types
+
+**Verticals (EXACTA, TRIFECTA, SUPERFECTA) all show ~+42pp pure model contribution at ER ≥ 1.30.** Bigger structural variance (deeper exotics) doesn't amplify or diminish the per-pp model contribution — the Benter blend's per-horse improvement translates to roughly the same per-combo selection edge regardless of combinatorial depth.
+
+**Horizontals split into two regimes:**
+- **PICK_3** has substantial structural takeout-stacking (+52.8% odds-only) on top of which the model adds +32pp. Total deployable ROI is +85% but most of it is structural.
+- **PICK_4** has minimal structural advantage (−1.6% odds-only) but **+91pp of pure model contribution** — 2× larger than verticals. Likely because PICK_4 pools are smaller and the public is more mispriced.
+
+This suggests **PICK_4 may be the most actionable bet type** — it's where the model adds the most value above what anyone betting that pool would automatically capture.
 
 ## What we caught (and learned)
 
@@ -104,33 +114,35 @@ Step 3 of the POC used `chart_payoff_per_$1` as the multiplier in ER. This coupl
 
 The audit (WA-T1.1, resolved 2026-05-27) recalibrated Stern's exponent from 0.81 to 0.86 via grid-search across 80K races. wagering-analytics uses 0.86. **race-day-sim's `probability.py` still hardcodes 0.81** in function defaults. The POC uses 0.86. Follow-up item to harmonize race-day-sim with the calibrated value.
 
-### SUPERFECTA gap (fixable)
+### SUPERFECTA gap (fixed during this POC)
 
-`fit_payoff_models.py` joins `race_probabilities.wagering_position = 4` to look up the 4th-place horse's odds for SUPERFECTA fitting. `wagering_position` is structurally 1-3 only — it's a WPS-payout-attribution column, correctly so for WPS pools (where coupled entries share a payout slot). For SUPERFECTA, each individual horse has its own pool-payout finish; the right join is `starters.official_position = 4`.
+Initial run found `payoff_coefficients.json` had no SUPERFECTA model — the script silently dropped SUPERFECTA rows because of a wrong join.
 
-Same pattern as audit WA-T1.2 (which fixed horizontal leg-winner identification by switching from `wagering_position` to `finish_position`). Same fix applies here. Tracked as task #41.
+Root cause: `fit_payoff_models.py` joined `race_probabilities.wagering_position = 4` to look up the 4th-place horse's odds. `wagering_position` is structurally 1-3 only — a WPS-payout-attribution column, correctly so for WPS pools (where coupled entries share a payout slot). For SUPERFECTA, each individual horse has its own pool-payout finish; the right join is `starters.official_position = 4`.
 
-EXACTA and TRIFECTA do NOT have this bug because their positions are 1-3, all within `wagering_position` range. QUINELLA also fits within 1-2; its absence from the JSON has a different (yet-unidentified) cause but isn't in scope for this POC. HI_5 would need the same SUPERFECTA fix, but isn't important enough to pursue.
+Same pattern as audit WA-T1.2 (which fixed horizontal leg-winner identification by switching from `wagering_position` to `finish_position`). Fixed in wagering-analytics commit 551b571. SUPERFECTA model fitted: R²(test) = 0.79 on 595K rows. Now in `models/payoff_coefficients.json` and exposed via `src/sim/payoff.py:project_superfecta_payoff`.
+
+EXACTA and TRIFECTA do NOT have this bug because their positions are 1-3, all within `wagering_position` range. QUINELLA also fits within 1-2; its absence from the JSON has a different (yet-unidentified) cause but isn't in scope. HI_5 would need the same SUPERFECTA fix but the upstream `exotic_harville_ratios` table has no HI_5 entries — out of scope.
 
 ## What deployment of these would look like
 
-For verticals (EXACTA, TRIFECTA), at ER ≥ 1.30:
-- ~25-28% mean ROI, 7/7 years positive
-- Median pool fraction at this threshold: <5% (well within market-impact tolerance)
-- Recommended threshold: 1.20-1.30 — sweet spot of selectivity vs noise
+| Bet type | ER thr | Expected ROI | Pure model contribution | Notes |
+|---|---|---|---|---|
+| EXACTA | 1.30 | +30% | +42pp | Smallest pool fraction; cleanest deployable |
+| TRIFECTA | 1.30 | +28% | +41pp | Same pattern as EXACTA, deeper combinatorics |
+| SUPERFECTA | 1.30 | +51% | +42pp | Higher headline because deeper combinatorics; same model edge |
+| PICK_3 | 1.30 | +85% | +32pp | Heavy structural component (+53pp from takeout-stacking) |
+| PICK_4 | 1.30 | +90% | **+91pp** | Biggest pure model edge; most actionable |
 
-For PICK_3, at ER ≥ 1.10:
-- ~68% mean ROI, 7/7 years positive
-- Heavy structural component; pure model contribution is +43pp
-- More volatile than verticals; CIs wider per year due to lower combo counts
+For all bet types, ER ≥ 1.30 is the recommended threshold — sweet spot of selectivity vs noise.
 
 ## What's NOT yet done
 
-1. **SUPERFECTA** — needs the WA fix above
-2. **Pool-fraction analysis at deployable thresholds** — done for EXACTA at one threshold; needs full grid
-3. **Multi-day batch through `run_simulation.py`** with these filters wired in (the FLB POC's analog of step 6) — required before any real-money deployment
-4. **Carryover/jackpot split for PICK_4-6** — too few combos for stable per-year analysis at this point
-5. **Cross-pool inefficiency vs model skill decomposition for SUPERFECTA** — once SUPERFECTA model exists
+1. **Pool-fraction analysis at deployable thresholds across all 5 bet types** — only sampled for EXACTA at one threshold so far
+2. **Multi-day batch through `run_simulation.py`** with these filters wired in (the FLB POC's analog of step 6) — required before any real-money deployment
+3. **PICK_5 / PICK_6** — projection model R² is weak (0.37, 0.27) and pools are dominated by carryover/jackpot mechanics. Separate POC needed
+4. **QUINELLA model** — absent from the JSON, root cause yet-unidentified, deferred since QUINELLA is small-volume
+5. **PICK_4 follow-up** — the +91pp pure-model contribution is unusually large. Worth investigating whether it's a real structural advantage or whether the smaller training-set (110K rows, R²=0.56) introduces overfitting we can't see at this evaluation level
 
 ## Files
 
@@ -138,7 +150,7 @@ POC scripts (`scripts/poc/exotic-overlay/`):
 - `01_data_inventory.py` — bet-type-by-bet-type data availability
 - `02_bet_everything_baseline.py` — takeout-floor confirmation per bet type
 - `03a_vertical_overlay.py` — EXACTA/QUINELLA/TRIFECTA/SUPERFECTA with chart-payoff filter (the buggy version we corrected)
-- `04_honest_overlay_per_year.py` — EXACTA/TRIFECTA/PICK_3 with projected-payoff filter (the honest version)
+- `04_honest_overlay_per_year.py` — EXACTA/TRIFECTA/SUPERFECTA/PICK_3/PICK_4 with projected-payoff filter (the honest version, full 5-type)
 - `audit_superfecta_2014.py` — diagnostic that surfaced the chart-payoff bug
 - `audit_top10_races.py` — per-race detail of the largest-paying SUPERFECTA results
 - `diag_combined_vs_odds.py` — first run of combined-vs-odds-only comparison (still using chart payoff)
@@ -155,10 +167,16 @@ Artifacts (`tmp/`, gitignored):
 
 ## Bottom line
 
-**The combined-prob model adds a stable +30-50pp ROI above the takeout floor across vertical exotics and above the structural takeout-stacking baseline of horizontal exotics, in 7/7 years from 2010-2016 on the simulator's playable universe.** This is comparable in magnitude to the FLB WIN-bet POC's +30-50pp tier-edge contributions and is similarly deployable subject to:
+**The combined-prob model adds stable +30-90pp ROI above the takeout floor across all 5 tested exotic bet types, in 7/7 years from 2010-2016 on the simulator's playable universe.**
 
-1. SUPERFECTA gap fix (small upstream WA change)
-2. End-to-end multi-day sim batch validation (the FLB POC's step 6 analog)
-3. Pool-fraction analysis at deployment thresholds
+- Verticals (EXACTA, TRIFECTA, SUPERFECTA): +41-42pp pure model contribution at ER ≥ 1.30
+- PICK_3: +32pp on top of +53pp structural takeout-stacking
+- PICK_4: **+91pp pure model contribution** — the standout deployable target
+
+This is comparable in magnitude to the FLB WIN-bet POC's +30-50pp tier-edge contributions and is similarly deployable subject to:
+
+1. End-to-end multi-day sim batch validation (the FLB POC's step 6 analog)
+2. Pool-fraction analysis at deployment thresholds across all 5 bet types
+3. PICK_4 follow-up to confirm the unusually-large pure-model edge isn't an artifact of the smaller training set
 
 The POC is ready to advance to integration once those three items close.
