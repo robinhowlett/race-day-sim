@@ -1008,7 +1008,7 @@ Any rows returned = at least one race exists in both tables.
 
 **Severity:** HIGH
 
-### IMP-T5.3 — `UNIMPORTABLE` status defined but never set
+### IMP-T5.3 — `UNIMPORTABLE` status defined but never set [FIXED 2026-05-28]
 
 **Files:** `model/ImportResult.java:11`, `pipeline/ImportTracker.java:62`, `PdfImporter.java:88-115`
 
@@ -1018,7 +1018,24 @@ The enum value exists and the tracker treats it as "done", but no code path actu
 
 **Fix:** Categorize known unparseable exception classes (encrypted PDFs, malformed structure, non-Equibase format) and have `recordFailure(...UNIMPORTABLE...)` flip them. Also: persist this categorization in source control somehow so other hosts inherit it.
 
-**Severity:** HIGH (operational — wastes CPU on every re-run)
+**Fix applied 2026-05-28:** New `UnimportableClassifier` (~150 LOC) inspects the parse-failure exception type and the raw file (size + magic bytes) to recognize the 6 unimportable shapes catalogued in `docs/zero-race-files.md`:
+
+| Shape | Detection signal |
+|---|---|
+| HtmlStub | file size matches one of the known stub sizes (3253, 8280) OR small file with `<html` / `<!doctype` magic |
+| EmptyPdf | file < 600 bytes with `%PDF-` magic |
+| OldChartFormat | `MalformedRaceException` in cause chain |
+| UnsupportedRaceFormat | `NoRaceDistanceFound` in cause chain |
+| UnparsableRunningLines | `MissingHorseJockeyException` in cause chain |
+| UnknownRaceType | `RaceTypeNameOrBreedNotIdentifiable` in cause chain |
+
+Class-name matching (rather than direct typed catch) keeps the classifier from needing a hard dependency on every chart-parser exception type. Anything not confidently classified stays `PARSE_FAILED` so the file is retried on the next run — the safe direction is "retry one extra time" rather than "permanently mark a recoverable file unimportable."
+
+`PdfImporter` now also catches the **zero-race success** case — chart-parser silently swallows per-race exceptions and returns an empty list when every race fails. Those PDFs now flip to `UNIMPORTABLE` rather than `SUCCESS` with 0 races written. `ImportTracker.recordFailure` made null-safe so the zero-race path can pass `null` for the cause.
+
+`ImportResult.unimportable(Path, Exception)` factory added for symmetry with `parseFailed` / `writeFailed`. New `UnimportableClassifierTest` exercises 11 cases (all 6 unimportable shapes, transient-IOException-stays-PARSE_FAILED, wrapped-cause-chain, zero-race-success). 24/24 pdf-importer tests pass.
+
+**Severity:** HIGH (operational — wastes CPU on every re-run) → FIXED.
 
 ### IMP-T5.4 — `dead_heat` flag only marks WIN dead heats, not 2nd/3rd
 
