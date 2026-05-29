@@ -1194,7 +1194,7 @@ Works today via Integer cache for value 1, but latent footgun if refactor return
 
 **Severity:** LOW
 
-### CP-T6.10 — Per-starter trip notes from footnotes are NOT structured
+### CP-T6.10 — Per-starter trip notes from footnotes are NOT structured [DEFERRED to Tier 7]
 
 **File:** `Footnotes.java`
 
@@ -1202,9 +1202,11 @@ Footnotes contain rich trip-note information ("rallied four wide", "checked earl
 
 **Fix:** Build a per-starter trip-note extractor that segments the footnotes by horse name and attaches phrases to `starters.trip_notes` (new column). This is a feature add, not a bug fix.
 
-**Severity:** LOW (data exists, just not structured)
+**Status (2026-05-28):** Deferred to Tier 7 (Trip Classification spec). The audit itself flagged this as "feature add, not bug fix"; Tier 7 covers the same problem area at length and prescribes a phased approach starting with DB analysis of footnote vocabulary. Doing CP-T6.10 in isolation now would build the wrong tool — the right shape of `trip_notes` depends on what Tier 7 decides about per-POC `wide` extraction, deterministic vs LLM, etc.
 
-### CP-T6.11 — Single sample PDF, 28% complexity coverage
+**Severity:** LOW (data exists, just not structured) → DEFERRED.
+
+### CP-T6.11 — Single sample PDF, 28% complexity coverage [PARTIALLY ADDRESSED 2026-05-28]
 
 **File:** `pom.xml`, two test fixtures
 
@@ -1212,7 +1214,9 @@ Two test PDFs cover one TB raceday + one multi-page race. No QH-only, Arabian, w
 
 **Fix:** Expand fixture set. Add property-based tests for the regex parsers. Raise coverage threshold gradually as fixtures grow.
 
-**Severity:** LOW (testing gap, not a runtime bug)
+**Status (2026-05-28):** Coverage ratchet applied — JaCoCo BUNDLE-level COMPLEXITY minimum raised 0.28 → 0.32 in `pom.xml` (actual at the time of ratchet was 0.3228 over 119 classes after this week's chart-parser work added 5 new tests for the DQ cascade and 10 for IndividualTime, plus minor regression tests in FractionalTimes). The threshold sits just below actual so trivial changes don't break the build, but the floor now climbs whenever real coverage does. Fixture expansion (QH-only, Arabian, walkover, broken-font) still pending — needs representative real PDFs and verification of expected output, deferred until those PDFs are sourced.
+
+**Severity:** LOW (testing gap, not a runtime bug) → ratcheted; fixture expansion deferred.
 
 ### CP-T6.12 — `convertToCsv` swallows IO errors [FIXED 2026-05-28]
 
