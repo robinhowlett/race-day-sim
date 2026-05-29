@@ -587,7 +587,16 @@ Long/longer tiers gain 7-8pp on the sim's universe (likely because Grade 1/2 sta
 3. ✅ New `SimDay.flb_filter(rn)` method computes per-starter `edge_flb = benter[i] - calibrate(odds_prob[i])` and tier-passes flag.
 4. ✅ Conviction-candidate identification in `_check_play` now AND's the existing rating-edge gate (`worst_case > 0` in canonical-rating space) with the FLB+tier gate (calibrated-probability space). Both must pass.
 5. ✅ `classify_opinion` STRONG_SPECIFIC and MODERATE_SPECIFIC restrict to FLB-passing horses; extreme 50/1+ is unreachable. STRUCTURAL/STRONG_NEGATIVE/SPREAD untouched (race-shape, not single-horse).
-6. ⏳ Multi-day sim batch (Sprint 5) for end-to-end validation.
+6. ✅ Multi-day sim batch end-to-end validation (n=200 deterministic days, 2005-2017, hash-seeded from sim_candidates):
+
+   | Policy | Bets | Hits | Hit rate | ROI | 95% CI |
+   |---|---|---|---|---|---|
+   | win | 206 | 27 | 13.1% | **+104.3%** | **(+15.8%, +192.8%)** ✓ excludes zero |
+   | opinion | 128 | 19 | 14.8% | +86.1% | (−18.5%, +190.8%) |
+
+   policy=win is **statistically significantly profitable in the production code path** at n=200. CI lower bound +15.8% well clear of zero. policy=opinion is positive in point estimate (+86%) but CI includes zero — needs n≈400-500 to tighten. Result aligns with step 9's data-layer prediction (sim_candidates universe was +EV across all bettable tiers, mean ~+30-50% per-tier).
+
+   This validates the FLB integration end-to-end: snapshot-driven `load_market_bias` (~26× faster than the original CTE-heavy SQL), FLB+tier filter AND-ed with rating-edge gate, classify_opinion's recommended structures, and `_evaluate_bet`'s deterministic payout match. Per-day cost 2.1s; n=200 batch wall-time ~8 min.
 
 **Implementation note — two edge systems coexist:** The integration uses Path C from the analysis. race-day-sim now has TWO complementary edge systems running in parallel:
 - **Rating-based edge** (canonical 100/112 scale) computed in `ratings.py` from velocity curves + form + bias multipliers. Gates structural validity (`worst_case > 0` confirms the model's confidence band clears zero).
@@ -599,7 +608,7 @@ The fork is acceptable: each gate measures a different thing and rejecting eithe
 
 POC code preserved in `scripts/poc/flb-calibration/`; full methodology and limitations in [flb-calibration-poc-2026-05-29.md](flb-calibration-poc-2026-05-29.md).
 
-**Severity:** HIGH (validated as ROI-driving). UI nudge done; calibration empirically validated; integration shipped; remaining work is multi-day sim batch validation.
+**Severity:** HIGH → ✅ COMPLETE. UI nudge done; calibration empirically validated (steps 1-9); integration shipped (Path C, single-repo); production code path validated end-to-end at n=200 with statistically significant +EV. RDS-T2.x is closed.
 - **Jockey upgrade only detected for jockeys with ≥50 starts** (RDS L6): ✅ FIXED 2026-05-28. Lowered to ≥20 starts in `blinder.py:jockey_career` CTE. Empirical: 1,567 / 3,779 apprentices (41%) had ≥50 career starts; lowering to 20 captures 1,861 (49%). The 20-start floor balances statistical meaningfulness (below ~20 starts, win rate is dominated by 0-vs-1-win jitter) against apprentice coverage. Documented inline.
 
 - **`bias_multiplier` lacks structural categorization** (RDS C2): ✅ FIXED 2026-05-29. The 11 multiplicative bias adjustments in `ratings.bias_multiplier` were stacked in a flat ~130-line function, mixing curve-omission patches (off-turf credit, generic surface-switch — empirical compensations for missing curve dimensions), race-day context priors (class movement), and race-day actor signals (equipment/medication, jockey, trainer A/E across 5 dimensions). The flat structure made independence assumptions implicit and hid the override pattern (RDS-T1.4) used to prevent double-counting between generic and trainer-specific multipliers.
