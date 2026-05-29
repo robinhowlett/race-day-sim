@@ -4,3 +4,9 @@ __pycache__/
 
 # POC tmp outputs (extracted DB data, pickled fits, large CSVs)
 scripts/poc/*/tmp/
+
+# Top-level tmp/ for batch results, scratch artifacts
+tmp/
+
+# OS clutter
+.DS_Store
