@@ -1093,7 +1093,7 @@ GROUP BY r.id, r.number_of_runners;
 
 **Severity:** MEDIUM → FIXED.
 
-### IMP-T5.6 — Scratched horses split on comma; commas in payouts mangle records
+### IMP-T5.6 — Scratched horses split on comma; commas in payouts mangle records [FIXED 2026-05-28]
 
 **File:** `chart-parser/.../Scratch.java:55`
 
@@ -1101,7 +1101,11 @@ GROUP BY r.id, r.number_of_runners;
 
 **Fix:** Use a regex-based extractor that respects `(...)` grouping, OR pre-process to remove commas from amounts before splitting.
 
-**Severity:** MEDIUM (rare, but produces silent scratch losses)
+**Fix applied 2026-05-28:** Replaced `text.split(",")` in `Scratch.parseScratchedHorses` with a paren-depth-aware splitter `splitTopLevelCommas` — a single linear scan that emits a part on every comma at depth 0 and accumulates everything else, including commas inside `(Earned $X,XXX.00)` annotations.
+
+The bug was latent because all existing test fixtures used 3-digit earned amounts (no internal commas). On 874K+ races with $10K+ purses any 4+-digit Earned would have manifested. ScratchTest extended with two new cases: a single 4-digit-earned scratch, and two 4-digit-earned scratches in one chart line — both would have produced 4 malformed fragments under the old splitter. 213/213 chart-parser tests pass.
+
+**Severity:** MEDIUM (rare, but produces silent scratch losses) → FIXED.
 
 ### IMP-T5.7 — Trainer/jockey suffix handling
 
