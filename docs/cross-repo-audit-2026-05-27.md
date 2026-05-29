@@ -1093,7 +1093,7 @@ The PDF only prints sire/dam/breeder/foaling info in the Winner block. Non-winni
 
 chart-parser is the upstream parsing library. ACTIVE (recent 2026 commits). Not deprecated.
 
-### CP-T6.1 — Disqualification cascade is incorrect for multiple DQs
+### CP-T6.1 — Disqualification cascade is incorrect for multiple DQs [FIXED 2026-05-28]
 
 **File:** `chart-parser/.../ChartParser.java:580-599`
 
@@ -1108,7 +1108,9 @@ GROUP BY race_id HAVING COUNT(*) >= 2;
 
 **Fix:** Snapshot original `finishPosition` per starter, then compute adjusted position = original − count(DQs whose `originalPosition < finishPos AND newPosition >= finishPos`). Add tests covering 2-DQ, 3-DQ, 4-DQ scenarios.
 
-**Severity:** HIGH (silently wrong official positions)
+**Fix applied 2026-05-28:** Rewrote `updateStartersAffectedByDisqualifications` to two passes — first mark all DQ'd starters with their stated `newPosition`, then for each non-DQ'd starter compute `officialPosition = finishPosition − count(DQs where DQ.originalPosition < finishPosition)`. The audit's suggested predicate (`originalPosition < finishPos AND newPosition >= finishPos`) was actually wrong: a DQ'd horse vacates one slot ahead of any starter with a higher chart-finish position regardless of where the DQ'd horse ultimately lands, so the `newPosition >= finishPos` clause incorrectly excludes valid promotions. Method made `static` since it has no instance dependencies; companion `matchesStarter(Disqualification, Starter)` overload also made static. New `ChartParserDqCascadeTest` covers single-DQ, 2-DQ no-overlap, 3-DQ skip pattern, the 4-DQ fixture from `DisqualificationTest`, and the no-DQs degenerate case. All 223 chart-parser tests pass.
+
+**Severity:** HIGH (silently wrong official positions) → FIXED.
 
 ### CP-T6.2 — Trainer/Owner program-less fallback breaks outer loop after one assignment [FIXED 2026-05-28]
 
