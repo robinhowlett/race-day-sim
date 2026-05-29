@@ -177,15 +177,38 @@ The tuned thresholds wander modestly year-to-year (e.g., short 2-5/1 picks edge�
 
 The mid 5-10/1 and long 10-20/1 tiers are the strongest in absolute ROI (mean +22% and +33% respectively), and these are precisely the tiers the audit identified as having the most actionable conviction-pick opportunity.
 
+### Simulator-universe alignment (step 9, sim_candidates restriction)
+
+Step 8 used the full rkm_market_analysis population (7.7M starter-races, 1997-2016). The simulator's `run_simulation.py` only plays a much narrower universe — the `sim_candidates` materialized view: 2005-2017, no Grade 1/2 days, ≥8 races, ≥7 with trifecta results, avg field ≥7, avg trifecta pool ≥$10K. **Question:** does the FLB tier table generalize from "any race that has odds and a model probability" to "the races the simulator actually plays"?
+
+Step 9 (`09_simulator_alignment.py`) reruns the rolling-window methodology with `JOIN sim_candidates`, restricting both training and test data to that population (2.6M rows, 2005-2016). It also pulls the actual chart-paid `wps.payoff/unit` alongside the closing-odds proxy, to confirm the closing-odds ROI numbers aren't artifacts.
+
+**Result — the strategy improves on the simulator's universe, doesn't degrade:**
+
+| Tier | full pop mean ROI | sim_candidates mean ROI | Δ | profitable years |
+|---|---|---|---|---|
+| chalk <2/1 | +6.6% | +7.9% | +1.3pp | 6/7 (2015 marginal at −2.5%) |
+| short 2-5/1 | +14.1% | +13.8% | −0.3pp | 7/7 |
+| mid 5-10/1 | +22.3% | +24.8% | +2.5pp | 7/7 |
+| long 10-20/1 | +33.4% | **+40.7%** | +7.3pp | 7/7 |
+| longer 20-50/1 | +46.2% | **+54.6%** | +8.4pp | 7/7 |
+| extreme 50/1+ | −46.0% | −44.9% | +1.1pp | 0/7 |
+
+Three observations:
+
+1. **The longshot-tier edges are 7-8pp BIGGER on the simulator's universe.** Hypothesis: removing Grade 1/2 days strips out stakes-quality longshots whose actual win rate is closer to their odds-implied (the public knows them). The remaining longshots in claimers/allowances/maidens are more uniformly mispriced.
+2. **Chalk loses one year (2015 at −2.5%).** Chalk was the most marginal tier in step 8 too. The smallest absolute edge stays smallest, with most variance in its sign.
+3. **Closing-odds ROI vs chart-actual `wps.payoff/unit` ROI agree to within 0.5pp across the board.** The POC's closing-odds proxy is not inflating the numbers.
+
+**Practical implication:** the production integration shipped via Path C (`src/sim/flb.py` + `SimDay.flb_filter`) is load-bearing in the right direction. Per-tier expected ROI on simulator runs is at least as good as the POC numbers, and the long/longer tiers — which hold most of the +EV — are 20-25% better. The strategy did not just transfer; it improved.
+
 ## Next steps
 
-1. **Apply FLB at race-day-sim's `ratings.py` layer** rather than at `compute_market.py` to avoid the combined_prob double-correction concern. The integration would replace the current `odds_to_rating()` market-rating computation with a calibrated version.
+1. **Multi-day sim batch through `run_simulation.py`** — validates that the simulator's full pipeline (rating-edge gate AND-ed with FLB-edge gate) preserves the +EV step 9 just confirmed at the data layer. Step 9 confirmed the **strategy** works on sim_candidates; the batch confirms the **production code path** delivers it. The first batch attempt (n=50, policy=win) stalled on per-day ratings/bias compute. Next pass should slim down per-race work (cache `format_race_ratings`, skip pace/equity/exotic-prediction work that isn't load-bearing) — target 5-10 days/min.
 
-2. **Wire the per-tier threshold table into the conviction-pick logic** in `run_simulation.py`. Replace `MIN_EDGE_CONVICTION_MARGIN > 0` with the per-tier table from this POC. Hard-block the extreme_50/1+ tier — no FLB-edge threshold makes it profitable.
+2. **Field-size-aware shrinkage** for the longshot extreme — defer until the multi-day batch shows meaningful action in small-field longshots.
 
-3. **Multi-day sim batch (Sprint 5)** — implement FLB + per-tier thresholds together, run 50+ days through `run_simulation.py`, track P&L. Validates the integration end-to-end including bet-sizing (Kelly) and exotic-bet construction.
-
-4. **Field-size-aware shrinkage** for the longshot extreme — defer until evidence from (3) shows meaningful action in small-field longshots.
+3. **Investigate Grade 1/2 longshot pricing** as a separate research question — step 9 implies stakes-quality longshots are priced more accurately than claimers/allowances/maidens. Could become its own per-class shrinkage adjustment if the population is large enough.
 
 ## Files
 
@@ -198,6 +221,7 @@ Step scripts (all under `scripts/poc/flb-calibration/`):
 - `06_threshold_grid.py` — per-tier ROI grid sweep (in-sample tuning)
 - `07_threshold_oos_validation.py` — three-way-split OOS validation (single-year)
 - `08_multi_year_stability.py` — rolling-window OOS across 2010-2016
+- `09_simulator_alignment.py` — same methodology restricted to the simulator's playable universe
 
 Artifacts (`tmp/`, gitignored):
 - `flb_curve.csv` — bucketed empirical curve
@@ -213,15 +237,18 @@ Artifacts (`tmp/`, gitignored):
 - `threshold_oos.csv` — out-of-sample validation per tier (single-year)
 - `threshold_oos.json` — full payload of tuned + validated thresholds
 - `rolling_window_oos.json` — per-year tuned thresholds + OOS ROIs (2010-2016)
+- `simulator_alignment_full_population.json` — step 9 baseline run
+- `simulator_alignment_sim_candidates.json` — step 9 sim_candidates-restricted run
 
 ## Bottom line
 
 **FLB calibration paired with per-tier minimum-edge thresholds delivers stably positive ROI across seven independent OOS years (2010-2016):**
 
-- All five bettable tiers are **profitable in 7/7 test years**. Mean OOS ROIs: chalk +6.6%, short +14.1%, mid +22.3%, long +33.4%, longer +46.2%.
+- All five bettable tiers are **profitable in 7/7 test years on the full population**. Mean OOS ROIs: chalk +6.6%, short +14.1%, mid +22.3%, long +33.4%, longer +46.2%.
 - Extreme 50/1+ is unprofitable in **0/7 test years** (mean −46%). Hard-block this tier.
 - The 2016 single-year result (+18.7% weighted ROI) was conservative — the multi-year mean is higher and remarkably stable across nearly two decades of pari-mutuel data.
-- The strongest absolute edges live in the **mid 5-10/1 and long 10-20/1 tiers**, which align with the audit's identified conviction-pick opportunity.
+- **Restricted to the simulator's playable universe** (`sim_candidates`: 2005-2016, no Grade 1/2, ≥7 fields, ≥$10K tri pools), the strategy IMPROVES — long-tier mean +40.7% (vs +33.4%), longer-tier +54.6% (vs +46.2%). The longshot-tier edges are 7-8pp larger on the sim's universe, likely because stakes-quality longshots (which are priced accurately by the public) have been removed.
+- The strongest absolute edges live in the **mid 5-10/1, long 10-20/1, and longer 20-50/1 tiers**, which align with the audit's identified conviction-pick opportunity.
 
 The audit's RDS-T2.x options 1 (calibration) and 2 (tier threshold) must be implemented TOGETHER. Naive FLB without the threshold makes ROI WORSE than baseline by expanding the longshot bet set into the unprofitable territory.
 

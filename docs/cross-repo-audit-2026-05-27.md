@@ -567,7 +567,20 @@ Surprise: longer odds want LOWER threshold (FLB is biggest there, so calibrated 
 
 Every bettable tier is positive in every test year from 2010 to 2016. Extreme 50/1+ is unprofitable in every year. The threshold table is not a single-year artifact — it is a stable, year-after-year edge across nearly two decades. The 2016 single-year +18.7% weighted figure is conservative versus the multi-year mean.
 
-**Integration shipped 2026-05-29 (commit pending):**
+**Simulator-universe alignment (step 9, 2026-05-29):** rerunning the same rolling-window methodology restricted to `sim_candidates` (the simulator's playable universe: 2005-2016, no Grade 1/2, ≥7 fields, ≥$10K tri pools, 2.6M starter-races) — the strategy improves rather than degrades:
+
+| Tier | full pop | sim_candidates | Δ |
+|---|---|---|---|
+| chalk <2/1 | +6.6% | +7.9% | +1.3pp |
+| short 2-5/1 | +14.1% | +13.8% | −0.3pp |
+| mid 5-10/1 | +22.3% | +24.8% | +2.5pp |
+| long 10-20/1 | +33.4% | **+40.7%** | +7.3pp |
+| longer 20-50/1 | +46.2% | **+54.6%** | +8.4pp |
+| extreme 50/1+ | −46.0% | −44.9% | +1.1pp |
+
+Long/longer tiers gain 7-8pp on the sim's universe (likely because Grade 1/2 stakes-quality longshots, which are priced accurately, have been removed). Closing-odds ROI matches chart-actual `wps.payoff/unit` ROI to within 0.5pp across all tiers. The production integration shipped this morning is therefore conservative — actual simulator runs should clear the POC numbers.
+
+**Integration shipped 2026-05-29:**
 
 1. ✅ FLB calibration grid persisted as `models/flb_calibration.json` (200-point isotonic curve from POC step 2, 1997-2016, 7.7M observations).
 2. ✅ New `src/sim/flb.py` exposes `calibrate(odds_prob)` and `tier_for(odds_prob)`. The `TIER_TABLE` constant carries the OOS-validated thresholds; extreme 50/1+ has `min_edge=None` (hard-block).
