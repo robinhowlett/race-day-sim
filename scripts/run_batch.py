@@ -208,10 +208,69 @@ def _bet_full_policy(sim: SimDay) -> list[dict]:
     return bets
 
 
+def _bet_exotic_policy(sim: SimDay) -> list[dict]:
+    """policy=exotic — projected-payoff overlay filter on all 5 bet types.
+
+    For each race, for each supported bet type, query
+    sim.exotic_overlay_filter(rn, bet_type, er_threshold=1.30) and
+    register $1 on every combo passing the filter. This is the production
+    code path equivalent of the POC's policy: every ER-passing combo gets
+    a $1 stake.
+
+    Note: this can produce hundreds of bets per race on a deep field.
+    The POC-validated headline ROIs assume zero market impact; real-world
+    deployment would need stake sizing constraints. Headline numbers tell
+    you whether the signal generalizes; deployable stake sizing is a
+    separate engineering problem.
+    """
+    VERTICAL = {"EXACTA": 2, "TRIFECTA": 3, "SUPERFECTA": 4}
+    HORIZONTAL = {"PICK_3": 3, "PICK_4": 4}
+
+    bets = []
+    race_numbers = sorted(int(r) for r in sim.card["race_number"].unique())
+    max_rn = race_numbers[-1] if race_numbers else 0
+
+    for rn in race_numbers:
+        # Verticals: one race
+        for bt, n_pos in VERTICAL.items():
+            combos = sim.exotic_overlay_filter(rn, bt, er_threshold=1.30)
+            for c in combos:
+                # Each combo's programs is already a list of strings;
+                # convert to the position-of-lists structure register_bet expects
+                position_lists = [[str(p)] for p in c["programs"]]
+                bets.append({
+                    "race": rn,
+                    "bet_type": bt,
+                    "programs": position_lists,
+                    "amount": 1.0,
+                    "rationale": (f"{bt} overlay: ER={c['er']:.2f} "
+                                  f"(harv {c['harv_prob']:.4f} × proj ${c['proj_pay']:.0f})"),
+                })
+
+        # Horizontals: must have N legs ahead in the card
+        for bt, n_legs in HORIZONTAL.items():
+            if rn + n_legs - 1 > max_rn:
+                continue
+            combos = sim.exotic_overlay_filter(rn, bt, er_threshold=1.30)
+            for c in combos:
+                # Horizontal: programs is list-of-leg-lists, race = first leg
+                leg_lists = [[str(p)] for p in c["programs"]]
+                bets.append({
+                    "race": rn,
+                    "bet_type": bt,
+                    "programs": leg_lists,
+                    "amount": 1.0,
+                    "rationale": (f"{bt} overlay: ER={c['er']:.2f} "
+                                  f"(parlay {c['harv_prob']:.5f} × proj ${c['proj_pay']:.0f})"),
+                })
+    return bets
+
+
 _POLICY_FNS = {
     "win":     _bet_win_policy,
     "opinion": _bet_opinion_policy,
     "full":    _bet_full_policy,
+    "exotic":  _bet_exotic_policy,
 }
 
 
@@ -269,12 +328,32 @@ def run_one_day(conn, track: str, date: str, policy: str) -> dict:
 
 
 def aggregate(results: list[dict]) -> dict:
-    """Roll up per-day results into batch-level stats."""
+    """Roll up per-day results into batch-level stats, with per-bet-type breakout."""
     invested = sum(r["invested"] for r in results)
     returned = sum(r["returned"] for r in results)
     n_bets = sum(r["n_bets"] for r in results)
     n_hits = sum(r["n_hits"] for r in results)
     n_days_played = sum(1 for r in results if r["n_bets"] > 0)
+
+    # Per-bet-type breakout
+    by_type: dict[str, dict] = {}
+    for r in results:
+        for bet in r.get("bets", []):
+            bt = bet["bet_type"]
+            entry = by_type.setdefault(bt, {"n_bets": 0, "n_hits": 0,
+                                             "invested": 0.0, "returned": 0.0})
+            entry["n_bets"] += 1
+            entry["invested"] += bet["amount"]
+            if bet["hit"]:
+                entry["n_hits"] += 1
+                entry["returned"] += bet["payout"]
+    for bt, e in by_type.items():
+        e["roi"] = (e["returned"] / e["invested"] - 1) if e["invested"] > 0 else None
+        e["hit_rate"] = (e["n_hits"] / e["n_bets"]) if e["n_bets"] else None
+        e["pnl"] = round(e["returned"] - e["invested"], 2)
+        e["invested"] = round(e["invested"], 2)
+        e["returned"] = round(e["returned"], 2)
+
     return {
         "n_days": len(results),
         "n_days_played": n_days_played,
@@ -285,6 +364,7 @@ def aggregate(results: list[dict]) -> dict:
         "returned": round(returned, 2),
         "pnl": round(returned - invested, 2),
         "roi": (returned / invested - 1) if invested > 0 else None,
+        "by_bet_type": by_type,
     }
 
 
@@ -336,6 +416,20 @@ def main():
     if agg["roi"] is not None:
         print(f"  ROI:                  {100*agg['roi']:+.2f}%")
     print(f"  Wall time:            {elapsed:.1f}s ({elapsed/max(len(results),1):.1f}s/day)")
+
+    # Per-bet-type breakout (matters most for policy=exotic where multiple
+    # types fire concurrently; harmless on win/opinion which use one type).
+    by_type = agg.get("by_bet_type", {})
+    if len(by_type) > 1:
+        print(f"\n  Per-bet-type:")
+        print(f"  {'type':<12} {'bets':>8} {'hits':>6} {'invested':>11}"
+              f" {'returned':>11} {'P&L':>10} {'ROI':>9}")
+        for bt in sorted(by_type, key=lambda k: -by_type[k]["n_bets"]):
+            e = by_type[bt]
+            roi_s = f"{100*e['roi']:+.1f}%" if e["roi"] is not None else "  —  "
+            print(f"  {bt:<12} {e['n_bets']:>8,} {e['n_hits']:>6,}"
+                  f" ${e['invested']:>9,.2f} ${e['returned']:>9,.2f}"
+                  f" ${e['pnl']:>+8.2f} {roi_s:>9}")
 
     out_path = Path(args.out) if args.out else (
         Path(__file__).resolve().parent / f"../tmp/batch_{args.policy}_{args.n}_{args.seed}.json"

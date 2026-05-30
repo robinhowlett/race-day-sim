@@ -82,12 +82,32 @@ ORDER BY r.number, s.choice
 """
 
 POOL_SIZES_SQL = """
+-- For verticals, the pool's race_number is the (only) race for that bet.
+-- For horizontals (DAILY_DOUBLE / PICK_*), the chart's exotics.race_id
+-- ALSO points to one specific race — but it's not always the FIRST leg.
+-- Some tracks anchor PICK_4/6 records to the last leg. Downstream
+-- consumers need leg-1's race to know "where to start the parlay,"
+-- so we resolve via exotic_race_legs.leg_number = 1 for horizontals
+-- and fall back to e.race_id for verticals.
+WITH legs AS (
+    SELECT erl.exotic_id, MIN(erl.leg_number) AS first_leg, MAX(erl.leg_number) AS last_leg
+    FROM handycapper.exotic_race_legs erl
+    GROUP BY erl.exotic_id
+),
+leg1 AS (
+    SELECT erl.exotic_id, erl.race_id AS leg1_race_id
+    FROM handycapper.exotic_race_legs erl
+    WHERE erl.leg_number = 1
+)
 SELECT
-    r.number AS race_number,
+    -- For horizontals, race_number is leg-1's race; for verticals, the only race.
+    COALESCE(leg1_r.number, r.number) AS race_number,
     e.bet_type,
     e.pool
 FROM handycapper.races r
 JOIN handycapper.exotics e ON e.race_id = r.id
+LEFT JOIN leg1 ON leg1.exotic_id = e.id
+LEFT JOIN handycapper.races leg1_r ON leg1_r.id = leg1.leg1_race_id
 WHERE r.track = %(track)s
   AND r.date = %(race_date)s
   AND e.pool IS NOT NULL
@@ -95,7 +115,7 @@ WHERE r.track = %(track)s
       'EXACTA', 'TRIFECTA', 'SUPERFECTA', 'QUINELLA', 'HI_5',
       'DAILY_DOUBLE', 'PICK_3', 'PICK_4', 'PICK_5', 'PICK_6'
   )
-ORDER BY r.number, e.bet_type
+ORDER BY race_number, e.bet_type
 """
 
 
@@ -224,6 +244,33 @@ def load_pre_race_card(conn, track: str, race_date: str) -> pd.DataFrame:
 def load_pool_sizes(conn, track: str, race_date: str) -> pd.DataFrame:
     """Load exotic pool sizes (pre-race information — pool sizes are public)."""
     return pd.read_sql(POOL_SIZES_SQL, conn, params={"track": track, "race_date": race_date})
+
+
+def load_market_analysis(conn, track: str, race_date: str) -> pd.DataFrame:
+    """Load rkm_market_analysis rows for this card.
+
+    Returns one row per starter with model_prob, odds_prob, combined_prob
+    (the empirically-fitted Benter blend from rkm/scripts/compute_market.py
+    using rkm's MLE-fit α). Used as the primary source of combined_prob
+    for the exotic-overlay filter so production matches what the POC
+    validated against.
+
+    Some races have no rkm rows (insufficient curve coverage at compute
+    time); consumers should handle that case by falling back or skipping.
+    """
+    sql = """
+        SELECT ma.starter_id, ma.race_id, r.number AS race_number,
+               s.program::text AS program,
+               ma.model_prob::float AS model_prob,
+               ma.odds_prob::float AS odds_prob,
+               ma.combined_prob::float AS combined_prob
+        FROM handycapper.rkm_market_analysis ma
+        JOIN handycapper.starters s ON s.id = ma.starter_id
+        JOIN handycapper.races r ON r.id = ma.race_id
+        WHERE r.track = %(track)s AND r.date = %(race_date)s
+        ORDER BY r.number, s.program
+    """
+    return pd.read_sql(sql, conn, params={"track": track, "race_date": race_date})
 
 
 MARKET_BIAS_SQL = """

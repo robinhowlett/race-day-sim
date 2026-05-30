@@ -20,11 +20,23 @@ import pandas as pd
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from sim.blinder import load_market_bias, load_pool_sizes, load_pre_race_card
+from sim.blinder import (
+    load_market_analysis,
+    load_market_bias,
+    load_pool_sizes,
+    load_pre_race_card,
+)
 from sim.db import get_connection
 from sim.flb import calibrate as flb_calibrate, tier_for as flb_tier_for
 from sim.pace import predict_pace
-from sim.payoff import estimate_combo_value
+from sim.payoff import (
+    estimate_combo_value,
+    project_exacta_payoff,
+    project_pick3_payoff,
+    project_pick4_payoff,
+    project_superfecta_payoff,
+    project_trifecta_payoff,
+)
 from sim.probability import (
     benter_combine,
     harville_ordered_prob,
@@ -188,6 +200,7 @@ class SimDay:
     card: pd.DataFrame = None
     pools: pd.DataFrame = None
     bias: pd.DataFrame = None
+    market: pd.DataFrame = None  # rkm_market_analysis rows for this card
     ratings: dict = field(default_factory=dict)  # race_number -> DataFrame
     bets: list = field(default_factory=list)
     results: pd.DataFrame = None
@@ -196,6 +209,7 @@ class SimDay:
         self.card = load_pre_race_card(conn, self.track, self.date)
         self.pools = load_pool_sizes(conn, self.track, self.date)
         self.bias = load_market_bias(conn, self.track, self.date)
+        self.market = load_market_analysis(conn, self.track, self.date)
         for rn in sorted(self.card["race_number"].unique()):
             self.ratings[rn] = format_race_ratings(self.card, self.bias, rn)
 
@@ -250,37 +264,68 @@ class SimDay:
         }
 
     def combined_probs(self, rn: int) -> dict:
-        """Compute model + odds + Benter-combined win probabilities per starter.
+        """Per-starter model + odds + Benter-combined win probabilities for race rn.
 
-        Read-only race-level numbers for exploratory analysis. Returns a dict
-        with `programs`, `odds`, `model`, `odds_probs`, `benter` arrays
-        aligned to the race's starter order. `model` and `benter` are None
-        when fewer than 3 horses have curve data.
+        Returns a dict with `programs`, `odds`, `model`, `odds_probs`,
+        `benter` arrays aligned to the race's starter order, plus a
+        `source` field indicating where benter came from:
+          - "rkm_market_analysis": canonical (matches the POC's training distribution).
+            Uses rkm's MLE-fit Benter α (not the simulator's hardcoded 1.89).
+          - "local_compute": fallback when rkm has no rows for this race.
+            Uses the simulator's local α=1.89 with model_probs_from_curves.
+            Numerically disagrees with rkm's stored values; consumers
+            comparing to POC results should treat this as a coverage gap.
+          - None: insufficient data either way.
+
+        Audit 2026-05-29: prior versions ALWAYS computed locally, producing
+        combined_prob values systematically different from what the POC
+        validated against. The exotic-overlay PICK_3/PICK_4 production
+        ROI failed to match POC predictions because the parlay product
+        compounded the per-horse disagreement across legs.
         """
         race = self.card[self.card["race_number"] == rn].copy().reset_index(drop=True)
         if race.empty:
             return {"programs": [], "odds": [], "model": None,
-                    "odds_probs": None, "benter": None}
-
-        furlongs = float(race["furlongs"].iloc[0])
-        race_distance_ft = furlongs * 660.0
+                    "odds_probs": None, "benter": None, "source": None}
 
         odds_list = race["closing_odds"].fillna(99).tolist()
         programs = race["program"].astype(str).tolist()
         odds_probs = odds_to_probs(odds_list)
 
+        # Try rkm_market_analysis first — this is what the POC validated.
+        if self.market is not None and not self.market.empty:
+            ma_race = self.market[self.market["race_number"] == rn]
+            # Need rkm row for every starter to use the canonical path.
+            ma_by_pgm = {str(p): (mp, op, cp) for p, mp, op, cp in zip(
+                ma_race["program"].astype(str),
+                ma_race["model_prob"], ma_race["odds_prob"], ma_race["combined_prob"]
+            )}
+            if all(p in ma_by_pgm for p in programs):
+                model_probs = np.array([ma_by_pgm[p][0] for p in programs])
+                ma_odds_probs = np.array([ma_by_pgm[p][1] for p in programs])
+                benter = np.array([ma_by_pgm[p][2] for p in programs])
+                return {"programs": programs, "odds": odds_list,
+                        "model": model_probs, "odds_probs": ma_odds_probs,
+                        "benter": benter, "source": "rkm_market_analysis"}
+
+        # Fallback: local Benter compute. Disagrees with rkm numerically;
+        # used only when rkm hasn't computed this race (insufficient curve
+        # coverage at compute_market.py time).
+        furlongs = float(race["furlongs"].iloc[0])
+        race_distance_ft = furlongs * 660.0
         has_curves = race["adj_v0"].notna() & race["adj_decay"].notna()
         if has_curves.sum() < 3:
             return {"programs": programs, "odds": odds_list,
-                    "model": None, "odds_probs": odds_probs, "benter": None}
+                    "model": None, "odds_probs": odds_probs,
+                    "benter": None, "source": None}
 
         adj_v0s = race["adj_v0"].fillna(race["adj_v0"].median()).tolist()
         decays = race["adj_decay"].fillna(race["adj_decay"].median()).tolist()
         model_probs = model_probs_from_curves(adj_v0s, decays, race_distance_ft)
         benter = benter_combine(model_probs, odds_probs)
-
         return {"programs": programs, "odds": odds_list,
-                "model": model_probs, "odds_probs": odds_probs, "benter": benter}
+                "model": model_probs, "odds_probs": odds_probs,
+                "benter": benter, "source": "local_compute"}
 
     def flb_filter(self, rn: int) -> dict:
         """Apply FLB calibration + per-tier minimum-edge filter per starter.
@@ -318,6 +363,245 @@ class SimDay:
                 "passes": passes,
             }
         return out
+
+    @staticmethod
+    def _fav_pos_in_combo(fav_idx: int, combo: tuple) -> int | None:
+        """Return 1-indexed position of fav within combo, None if absent."""
+        for k, idx in enumerate(combo):
+            if idx == fav_idx:
+                return k + 1
+        return None
+
+    def exotic_overlay_filter(self, rn: int, bet_type: str,
+                              er_threshold: float = 1.30) -> list[dict]:
+        """Apply the POC-validated projected-payoff overlay filter to combos
+        for a given race + bet type.
+
+        For each possible combo, computes:
+            harv_prob = Stern/Harville probability of that ordered finish
+                        (or per-leg parlay product for horizontals), using
+                        rkm's combined_prob blend
+            proj_pay = OLS-projected expected per-$1 payoff
+                       (src/sim/payoff.py)
+            ER       = harv_prob × proj_pay
+
+        Returns combos with ER ≥ er_threshold, sorted by ER descending.
+        ER ≥ 1.30 was the POC's deployable sweet spot across all 5
+        bet types (EXACTA/TRIFECTA/SUPERFECTA: +25-50% mean ROI;
+        PICK_3/PICK_4: +85-90% mean ROI).
+
+        Returns [] when the bet type isn't supported, the race lacks
+        Benter coverage, or the relevant pool data is missing.
+
+        Each combo dict contains:
+            programs: list of program strings (length = positions for
+                      verticals, = N legs for horizontals)
+            harv_prob: float
+            proj_pay: float (per-$1)
+            er: float
+            indices: list of starter indices in the per-race state
+                     (vertical) or list-of-leg-indices (horizontal)
+
+        See docs/exotic-overlay-poc-2026-05-29.md for the methodology
+        and 7-year per-year stability tables.
+        """
+        VERTICAL = {"EXACTA": 2, "TRIFECTA": 3, "SUPERFECTA": 4}
+        HORIZONTAL_LEGS = {"PICK_3": 3, "PICK_4": 4}
+
+        if bet_type in VERTICAL:
+            return self._exotic_overlay_filter_vertical(
+                rn, bet_type, VERTICAL[bet_type], er_threshold)
+        elif bet_type in HORIZONTAL_LEGS:
+            return self._exotic_overlay_filter_horizontal(
+                rn, bet_type, HORIZONTAL_LEGS[bet_type], er_threshold)
+        return []
+
+    def _exotic_overlay_filter_vertical(
+        self, rn: int, bet_type: str, n_pos: int, er_threshold: float,
+    ) -> list[dict]:
+        """Vertical exotic overlay filter (EXACTA/TRIFECTA/SUPERFECTA).
+
+        Enumerates every ordered combo of size n_pos from the field,
+        computes Harville on combined_prob × OLS-projected payoff,
+        returns ER-passing combos.
+        """
+        cp = self.combined_probs(rn)
+        if cp["benter"] is None:
+            return []
+        # Only canonical rkm-blended probs match the POC's threshold validation.
+        # Local-compute fallback uses different α and would silently produce
+        # off-distribution ER values.
+        if cp.get("source") != "rkm_market_analysis":
+            return []
+        benter = cp["benter"]
+        n = len(benter)
+        if n < n_pos:
+            return []
+
+        # Pool size required for OLS payoff projection
+        race_pools = self.pools[self.pools["race_number"] == rn] if self.pools is not None else None
+        if race_pools is None or race_pools.empty:
+            return []
+        pool_match = race_pools[race_pools["bet_type"] == bet_type]
+        if pool_match.empty:
+            return []
+        pool_size = float(pool_match["pool"].iloc[0])
+        if pool_size <= 0:
+            return []
+
+        odds_list = cp["odds"]
+        programs = cp["programs"]
+        field_size = n
+        # HHI on rkm's combined_prob (not raw odds_probs); matches POC
+        import numpy as _np
+        benter_arr = _np.asarray(benter)
+        hhi = float((benter_arr ** 2).sum())
+
+        # Identify favorite by minimum positive odds
+        positive_odds = [(i, o) for i, o in enumerate(odds_list) if o and o > 0]
+        if not positive_odds:
+            return []
+        fav_idx = min(positive_odds, key=lambda x: x[1])[0]
+
+        # Project function lookup
+        if bet_type == "EXACTA":
+            project_fn = lambda combo: project_exacta_payoff(
+                odds_list[combo[0]], odds_list[combo[1]],
+                pool_size, field_size, hhi, 1, self._fav_pos_in_combo(fav_idx, combo))
+        elif bet_type == "TRIFECTA":
+            project_fn = lambda combo: project_trifecta_payoff(
+                odds_list[combo[0]], odds_list[combo[1]], odds_list[combo[2]],
+                pool_size, field_size, hhi, 1, self._fav_pos_in_combo(fav_idx, combo))
+        elif bet_type == "SUPERFECTA":
+            project_fn = lambda combo: project_superfecta_payoff(
+                odds_list[combo[0]], odds_list[combo[1]],
+                odds_list[combo[2]], odds_list[combo[3]],
+                pool_size, field_size, hhi, 1, self._fav_pos_in_combo(fav_idx, combo))
+        else:
+            return []
+
+        from itertools import permutations
+        results = []
+        for combo in permutations(range(n), n_pos):
+            harv_prob = harville_ordered_prob(benter, list(combo))
+            if harv_prob <= 0:
+                continue
+            proj_pay = project_fn(combo)
+            if proj_pay is None or proj_pay <= 0:
+                continue
+            er = harv_prob * proj_pay
+            if er < er_threshold:
+                continue
+            results.append({
+                "programs": [programs[i] for i in combo],
+                "indices": list(combo),
+                "harv_prob": harv_prob,
+                "proj_pay": proj_pay,
+                "er": er,
+            })
+        results.sort(key=lambda r: r["er"], reverse=True)
+        return results
+
+    def _exotic_overlay_filter_horizontal(
+        self, rn: int, bet_type: str, n_legs: int, er_threshold: float,
+    ) -> list[dict]:
+        """Horizontal overlay filter (PICK_3 / PICK_4).
+
+        Enumerates every (leg1, leg2, ..., legN) combo across consecutive
+        races starting at rn. Parlay probability = product of per-leg
+        Stern win probs on combined_prob. Projected payoff via the
+        bet-type's OLS regression.
+        """
+        # Need per-leg combined_probs + favorite identification
+        leg_data = []
+        for offset in range(n_legs):
+            leg_rn = rn + offset
+            cp = self.combined_probs(leg_rn)
+            if cp["benter"] is None:
+                return []
+            # All legs must use canonical rkm probs, not local-compute,
+            # for the parlay-product threshold to match POC validation.
+            if cp.get("source") != "rkm_market_analysis":
+                return []
+            # favorite by minimum positive odds
+            odds_list = cp["odds"]
+            positive_odds = [(i, o) for i, o in enumerate(odds_list) if o and o > 0]
+            if not positive_odds:
+                return []
+            fav_idx = min(positive_odds, key=lambda x: x[1])[0]
+            leg_data.append({
+                "rn": leg_rn,
+                "benter": cp["benter"],
+                "odds": odds_list,
+                "programs": cp["programs"],
+                "fav_idx": fav_idx,
+                "field_size": len(cp["benter"]),
+            })
+
+        # Pool size for the bet (looked up on the first leg of the bet)
+        race_pools = self.pools[self.pools["race_number"] == rn] if self.pools is not None else None
+        if race_pools is None or race_pools.empty:
+            return []
+        pool_match = race_pools[race_pools["bet_type"] == bet_type]
+        if pool_match.empty:
+            return []
+        pool_size = float(pool_match["pool"].iloc[0])
+        if pool_size <= 0:
+            return []
+
+        import numpy as _np
+        # Per-leg HHI and field size (averaged for OLS model)
+        avg_field = sum(ld["field_size"] for ld in leg_data) / n_legs
+        avg_hhi = sum(float((_np.asarray(ld["benter"]) ** 2).sum()) for ld in leg_data) / n_legs
+
+        # Per-leg Stern-power for fast parlay-prob computation
+        from sim.probability import STERN_K
+        leg_p_k = []
+        for ld in leg_data:
+            arr = _np.asarray(ld["benter"], dtype=float)
+            p_k = arr ** STERN_K
+            leg_p_k.append((p_k, p_k.sum()))
+
+        if bet_type == "PICK_3":
+            project_fn = project_pick3_payoff
+        elif bet_type == "PICK_4":
+            project_fn = project_pick4_payoff
+        else:
+            return []
+
+        from itertools import product as iproduct
+        leg_sizes = [ld["field_size"] for ld in leg_data]
+        results = []
+        for combo in iproduct(*[range(s) for s in leg_sizes]):
+            # Parlay probability = product of per-leg conditional win probs
+            parlay = 1.0
+            for k in range(n_legs):
+                p_k, total = leg_p_k[k]
+                if total <= 0:
+                    parlay = 0.0
+                    break
+                parlay *= p_k[combo[k]] / total
+            if parlay <= 0:
+                continue
+            # bad_fav_legs: count legs where the chosen runner isn't the fav
+            bad_fav = sum(1 for k in range(n_legs) if combo[k] != leg_data[k]["fav_idx"])
+            leg_winner_odds = [leg_data[k]["odds"][combo[k]] for k in range(n_legs)]
+            proj_pay = project_fn(leg_winner_odds, pool_size, avg_hhi,
+                                   avg_field, bad_fav)
+            if proj_pay is None or proj_pay <= 0:
+                continue
+            er = parlay * proj_pay
+            if er < er_threshold:
+                continue
+            results.append({
+                "programs": [leg_data[k]["programs"][combo[k]] for k in range(n_legs)],
+                "indices": list(combo),
+                "harv_prob": parlay,
+                "proj_pay": proj_pay,
+                "er": er,
+            })
+        results.sort(key=lambda r: r["er"], reverse=True)
+        return results
 
     def top_value_combos(self, rn: int, top_n: int = 10,
                          bet_type: str = "TRIFECTA") -> list[dict]:
