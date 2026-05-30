@@ -208,7 +208,7 @@ def _bet_full_policy(sim: SimDay) -> list[dict]:
     return bets
 
 
-def _bet_exotic_policy(sim: SimDay) -> list[dict]:
+def _bet_exotic_policy(sim: SimDay, er_threshold: float = 1.30) -> list[dict]:
     """policy=exotic — projected-payoff overlay filter on all 5 bet types.
 
     For each race, for each supported bet type, query
@@ -233,7 +233,7 @@ def _bet_exotic_policy(sim: SimDay) -> list[dict]:
     for rn in race_numbers:
         # Verticals: one race
         for bt, n_pos in VERTICAL.items():
-            combos = sim.exotic_overlay_filter(rn, bt, er_threshold=1.30)
+            combos = sim.exotic_overlay_filter(rn, bt, er_threshold=er_threshold)
             for c in combos:
                 # Each combo's programs is already a list of strings;
                 # convert to the position-of-lists structure register_bet expects
@@ -251,7 +251,7 @@ def _bet_exotic_policy(sim: SimDay) -> list[dict]:
         for bt, n_legs in HORIZONTAL.items():
             if rn + n_legs - 1 > max_rn:
                 continue
-            combos = sim.exotic_overlay_filter(rn, bt, er_threshold=1.30)
+            combos = sim.exotic_overlay_filter(rn, bt, er_threshold=er_threshold)
             for c in combos:
                 # Horizontal: programs is list-of-leg-lists, race = first leg
                 leg_lists = [[str(p)] for p in c["programs"]]
@@ -274,11 +274,15 @@ _POLICY_FNS = {
 }
 
 
-def run_one_day(conn, track: str, date: str, policy: str) -> dict:
+def run_one_day(conn, track: str, date: str, policy: str,
+                er_threshold: float = 1.30) -> dict:
     """Load a day, auto-bet per policy, evaluate, return aggregated stats."""
     sim = SimDay(track, date)
     sim.load(conn)
-    bet_specs = _POLICY_FNS[policy](sim)
+    if policy == "exotic":
+        bet_specs = _bet_exotic_policy(sim, er_threshold=er_threshold)
+    else:
+        bet_specs = _POLICY_FNS[policy](sim)
 
     # Register silently — _validate_bet still fires, but we suppress its prints.
     n_register_failures = 0
@@ -373,6 +377,9 @@ def main():
     ap.add_argument("--n", type=int, default=50)
     ap.add_argument("--policy", choices=list(_POLICY_FNS), default="win")
     ap.add_argument("--seed", default="batch-2026-05-29")
+    ap.add_argument("--er-threshold", type=float, default=1.30,
+                    help="ER threshold for policy=exotic (default: 1.30, "
+                         "POC's 'deployable sweet spot'). 2.00+ is more selective.")
     ap.add_argument("--out", default=None,
                     help="Path to JSON output (default: tmp/batch_<policy>_<n>.json)")
     args = ap.parse_args()
@@ -390,8 +397,26 @@ def main():
     print("-" * 80)
     t0 = time.time()
     for i, (track, date) in enumerate(days, 1):
+        # Resilient: if connection died (tunnel hiccup, server timeout),
+        # reconnect for this day. Avoids losing the whole batch on one drop.
+        for attempt in range(3):
+            try:
+                r = run_one_day(conn, track, date, args.policy, args.er_threshold)
+                break
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as conn_err:
+                if attempt == 2:
+                    raise
+                print(f"  (conn issue on day {i}, reconnecting: {conn_err.__class__.__name__})")
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                conn = get_connection()
+        else:
+            r = None
+        if r is None:
+            continue
         try:
-            r = run_one_day(conn, track, date, args.policy)
             results.append(r)
             roi_s = f"{100*r['roi']:+.1f}%" if r["roi"] is not None else "  —  "
             print(f"{i:>3}  {date:<10}  {track:<4}  {r['n_races']:>5}  "
